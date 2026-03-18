@@ -1,0 +1,117 @@
+@import "tailwindcss";
+
+@source "../src";
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Shimmer animation */
+@keyframes shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+@keyframes loading-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@utility animate-shimmer {
+  animation: shimmer 1.5s linear infinite;
+}
+
+@utility animate-loading {
+  animation: loading-shimmer 1.5s infinite;
+}
+
+@utility scrollbar-thin {
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 3px;
+  }
+  &::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.25);
+  }
+}
+
+.dark .scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+}
+.dark .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Electron drag regions */
+@utility drag {
+  -webkit-app-region: drag;
+}
+
+@utility no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Markdown content styles for assistant messages */
+.msg-assistant p {
+  margin: 0 0 8px 0;
+}
+.msg-assistant p:last-child {
+  margin-bottom: 0;
+}
+.msg-assistant code {
+  @apply bg-black/7 dark:bg-white/10 px-1.5 py-px rounded text-xs font-mono;
+}
+.msg-assistant pre {
+  @apply bg-[#1e1e1e] dark:bg-[#111] text-[#d4d4d4] p-3 rounded-md overflow-x-auto my-2 text-xs leading-relaxed;
+}
+.msg-assistant pre code {
+  @apply bg-transparent p-0 rounded-none text-inherit text-inherit;
+}
+.msg-assistant ul,
+.msg-assistant ol {
+  @apply my-1.5 pl-5;
+}
+.msg-assistant li {
+  @apply my-0.5;
+}
+.msg-assistant h1,
+.msg-assistant h2,
+.msg-assistant h3,
+.msg-assistant h4 {
+  @apply mt-2.5 mb-1.5 font-semibold;
+}
+.msg-assistant h1 { @apply text-base; }
+.msg-assistant h2 { @apply text-[15px]; }
+.msg-assistant h3 { @apply text-sm; }
+.msg-assistant h4 { @apply text-[13px]; }
+.msg-assistant blockquote {
+  @apply border-l-[3px] border-neutral-300 dark:border-neutral-600 pl-2.5 my-1.5 text-neutral-500 dark:text-neutral-400;
+}
+.msg-assistant a {
+  @apply text-blue-600 dark:text-blue-400 no-underline hover:underline;
+}
+.msg-assistant hr {
+  @apply border-none border-t border-neutral-300 dark:border-neutral-700 my-2;
+}
+.msg-assistant table {
+  @apply border-collapse my-2 text-xs;
+}
+.msg-assistant th,
+.msg-assistant td {
+  @apply border border-neutral-300 dark:border-neutral-700 px-2 py-1;
+}
+.msg-assistant th {
+  @apply bg-black/4 dark:bg-white/6 font-semibold;
+}

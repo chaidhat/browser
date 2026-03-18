@@ -13,8 +13,9 @@
     "resolveJsonModule": true,
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "jsx": "react-jsx"
   },
-  "include": ["src/**/*"],
+  "include": ["src/main.ts", "src/preload.ts"],
   "exclude": ["node_modules", "dist"]
 }

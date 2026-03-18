@@ -1,0 +1,155 @@
+import { useRef, useEffect, useImperativeHandle, forwardRef, useCallback } from 'react';
+
+export interface TabInfo {
+  id: number;
+  title: string;
+  url: string;
+  type: 'chat' | 'page';
+}
+
+export interface WebviewContainerHandle {
+  goBack(): void;
+  goForward(): void;
+  reload(): void;
+  loadURL(url: string): void;
+  setVisibility(visible: boolean): void;
+  findInPage(text: string, forward: boolean): void;
+  stopFindInPage(): void;
+}
+
+interface Props {
+  tabs: TabInfo[];
+  activeTabId: number;
+  onTabUpdate: (id: number, updates: { title?: string; url?: string }) => void;
+  onLoadingChange: (tabId: number, loading: boolean) => void;
+  onFaviconChange: (tabId: number, favicon: string) => void;
+  hidden?: boolean;
+}
+
+export const WebviewContainer = forwardRef<WebviewContainerHandle, Props>(
+  ({ tabs, activeTabId, onTabUpdate, onLoadingChange, onFaviconChange, hidden }, ref) => {
+    const containerRef = useRef<HTMLDivElement>(null);
+    const webviewsRef = useRef<Map<number, Electron.WebviewTag>>(new Map());
+    const listenersRef = useRef<Map<number, (() => void)>>(new Map());
+
+    const getActiveWebview = useCallback(() => {
+      return webviewsRef.current.get(activeTabId);
+    }, [activeTabId]);
+
+    useImperativeHandle(ref, () => ({
+      goBack() {
+        getActiveWebview()?.goBack();
+      },
+      goForward() {
+        getActiveWebview()?.goForward();
+      },
+      reload() {
+        getActiveWebview()?.reload();
+      },
+      loadURL(url: string) {
+        getActiveWebview()?.loadURL(url);
+      },
+      setVisibility(visible: boolean) {
+        for (const wv of webviewsRef.current.values()) {
+          wv.style.visibility = visible ? '' : 'hidden';
+        }
+      },
+      findInPage(text: string, forward: boolean) {
+        const wv = getActiveWebview();
+        if (wv) {
+          const wcId = (wv as any).getWebContentsId?.();
+          if (wcId) {
+            window.browser.findInPage(wcId, text, forward);
+          }
+        }
+      },
+      stopFindInPage() {
+        const wv = getActiveWebview();
+        if (wv) {
+          const wcId = (wv as any).getWebContentsId?.();
+          if (wcId) {
+            window.browser.stopFindInPage(wcId);
+          }
+        }
+      },
+    }), [getActiveWebview]);
+
+    useEffect(() => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      const pageTabs = tabs.filter(t => t.type === 'page');
+      const currentIds = new Set(pageTabs.map(t => t.id));
+      const existingIds = new Set(webviewsRef.current.keys());
+
+      for (const tab of pageTabs) {
+        if (!existingIds.has(tab.id)) {
+          const wv = document.createElement('webview') as Electron.WebviewTag;
+          wv.src = tab.url;
+          wv.setAttribute('autosize', 'on');
+          wv.setAttribute('allowpopups', '');
+          wv.className = 'w-full h-full';
+          wv.style.display = 'none';
+          container.appendChild(wv);
+          webviewsRef.current.set(tab.id, wv);
+
+          const tabId = tab.id;
+
+          const onDidNavigate = (e: any) => {
+            onTabUpdate(tabId, { url: e.url });
+          };
+          const onDidNavigateInPage = (e: any) => {
+            onTabUpdate(tabId, { url: e.url });
+          };
+          const onPageTitleUpdated = (e: any) => {
+            onTabUpdate(tabId, { title: e.title });
+          };
+          const onDidStartLoading = () => {
+            onLoadingChange(tabId, true);
+          };
+          const onDidStopLoading = () => {
+            onLoadingChange(tabId, false);
+          };
+          const onPageFaviconUpdated = (e: any) => {
+            if (e.favicons && e.favicons.length > 0) {
+              onFaviconChange(tabId, e.favicons[0]);
+            }
+          };
+          wv.addEventListener('did-navigate', onDidNavigate);
+          wv.addEventListener('did-navigate-in-page', onDidNavigateInPage);
+          wv.addEventListener('page-title-updated', onPageTitleUpdated);
+          wv.addEventListener('did-start-loading', onDidStartLoading);
+          wv.addEventListener('did-stop-loading', onDidStopLoading);
+          wv.addEventListener('page-favicon-updated', onPageFaviconUpdated);
+
+          listenersRef.current.set(tabId, () => {
+            wv.removeEventListener('did-navigate', onDidNavigate);
+            wv.removeEventListener('did-navigate-in-page', onDidNavigateInPage);
+            wv.removeEventListener('page-title-updated', onPageTitleUpdated);
+            wv.removeEventListener('did-start-loading', onDidStartLoading);
+            wv.removeEventListener('did-stop-loading', onDidStopLoading);
+            wv.removeEventListener('page-favicon-updated', onPageFaviconUpdated);
+          });
+        }
+      }
+
+      for (const id of existingIds) {
+        if (!currentIds.has(id)) {
+          const wv = webviewsRef.current.get(id);
+          wv?.remove();
+          webviewsRef.current.delete(id);
+          listenersRef.current.get(id)?.();
+          listenersRef.current.delete(id);
+        }
+      }
+    }, [tabs, onTabUpdate, onLoadingChange]);
+
+    useEffect(() => {
+      for (const [id, wv] of webviewsRef.current) {
+        wv.style.display = id === activeTabId ? 'flex' : 'none';
+      }
+    }, [activeTabId, tabs]);
+
+    return <div className="flex-1 h-full relative" ref={containerRef} style={hidden ? { display: 'none' } : undefined} />;
+  }
+);
