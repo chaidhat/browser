@@ -29,7 +29,61 @@
     <div id="url-bar-container">
       <input type="text" id="url-bar" placeholder="Search or enter URL" spellcheck="false" autocomplete="off">
     </div>
+    <div id="toolbar-actions">
+      <button id="chat-toggle-btn" title="AI Chat">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M2 3C2 2.44772 2.44772 2 3 2H13C13.5523 2 14 2.44772 14 3V10C14 10.5523 13.5523 11 13 11H5L2 14V3Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="5.5" cy="6.5" r="0.75" fill="currentColor"/>
+          <circle cx="8" cy="6.5" r="0.75" fill="currentColor"/>
+          <circle cx="10.5" cy="6.5" r="0.75" fill="currentColor"/>
+        </svg>
+      </button>
+      <button id="settings-btn" title="Settings">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M8 10C9.10457 10 10 9.10457 10 8C10 6.89543 9.10457 6 8 6C6.89543 6 6 6.89543 6 8C6 9.10457 6.89543 10 8 10Z" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M6.7 2.5L6.4 3.9C6 4 5.6 4.2 5.3 4.5L3.9 4L3.1 5.5L4.2 6.4C4.2 6.6 4.1 6.8 4.1 7V7C4.1 7 4.1 7.4 4.2 7.6L3.1 8.5L3.9 10L5.3 9.5C5.6 9.8 6 10 6.4 10.1L6.7 11.5H8.3L8.6 10.1C9 10 9.4 9.8 9.7 9.5L11.1 10L11.9 8.5L10.8 7.6C10.9 7.4 10.9 7.2 10.9 7V7C10.9 6.8 10.9 6.6 10.8 6.4L11.9 5.5L11.1 4L9.7 4.5C9.4 4.2 9 4 8.6 3.9L8.3 2.5H6.7Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
   </div>
-  <script src="renderer.js"></script>
+
+  <div id="content-area">
+    <webview id="webview" src="https://www.google.com" autosize="on"></webview>
+
+    <!-- Chat Sidebar -->
+    <div id="chat-sidebar">
+      <div id="chat-header">
+        <span>AI Chat</span>
+        <span id="chat-model">gpt-4o-mini</span>
+      </div>
+      <div id="chat-messages"></div>
+      <div id="chat-input-area">
+        <textarea id="chat-input" placeholder="Ask anything..." rows="1"></textarea>
+        <button id="chat-send-btn" title="Send">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M2 8L14 2L8 14L7 9L2 8Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-overlay"></div>
+  <div id="settings-modal">
+    <h2>Settings</h2>
+    <div class="settings-group">
+      <label for="api-key-input">OpenAI API Key</label>
+      <input type="password" id="api-key-input" placeholder="sk-..." spellcheck="false" autocomplete="off">
+      <p class="settings-hint">Your key is stored locally and never shared.</p>
+    </div>
+    <div class="settings-actions">
+      <button id="cancel-settings-btn" class="btn-secondary">Cancel</button>
+      <button id="save-settings-btn" class="btn-primary">Save</button>
+    </div>
+  </div>
+
+  <script>var exports = {};</script>
+  <script src="../dist/renderer.js"></script>
 </body>
 </html>

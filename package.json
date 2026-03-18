@@ -2,16 +2,20 @@
   "name": "beijing-browser",
   "version": "1.0.0",
   "description": "A custom Chromium-based browser built with Electron",
-  "main": "main.js",
+  "main": "dist/main.js",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron . --enable-logging"
+    "build": "tsc",
+    "start": "tsc && electron .",
+    "dev": "tsc && electron . --enable-logging"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "devDependencies": {
-    "electron": "^41.0.3"
+    "@types/node": "^25.5.0",
+    "electron": "^41.0.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
   }
 }
