@@ -38,6 +38,14 @@ function createWindow(): void {
   });
 
   mainWindow.loadFile(path.join(__dirname, '..', 'ui', 'index.html'));
+
+  // Handle new windows opened by webview guests (target="_blank" links, window.open)
+  mainWindow.webContents.on('did-attach-webview', (_event, webContents) => {
+    webContents.setWindowOpenHandler(({ url }) => {
+      mainWindow?.webContents.send('open-url-in-new-tab', url);
+      return { action: 'deny' };
+    });
+  });
 }
 
 // Navigation IPC — forward to webview via renderer
@@ -69,7 +77,7 @@ ipcMain.handle('chat-send', async (_event, messages: ChatMessage[]) => {
 
   try {
     const body = JSON.stringify({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5.4',
       messages,
     });
 
