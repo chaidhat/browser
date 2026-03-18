@@ -1,0 +1,92 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  overflow: hidden;
+  height: 48px;
+}
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  height: 48px;
+  padding: 0 12px;
+  padding-left: 80px; /* space for macOS traffic lights */
+  gap: 8px;
+  background: #16213e;
+  border-bottom: 1px solid #0f3460;
+  -webkit-app-region: drag;
+}
+
+#nav-buttons {
+  display: flex;
+  gap: 2px;
+  -webkit-app-region: no-drag;
+}
+
+#nav-buttons button {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #a0a0b8;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+
+#nav-buttons button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e0e0e0;
+}
+
+#nav-buttons button:active {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+#url-bar-container {
+  flex: 1;
+  -webkit-app-region: no-drag;
+}
+
+#url-bar {
+  width: 100%;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid #0f3460;
+  border-radius: 8px;
+  background: #0a0a1a;
+  color: #e0e0e0;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+#url-bar:focus {
+  border-color: #533483;
+  box-shadow: 0 0 0 2px rgba(83, 52, 131, 0.3);
+}
+
+#url-bar::placeholder {
+  color: #5a5a7a;
+}
+
+#url-bar.loading {
+  background: linear-gradient(90deg, #0a0a1a 0%, #16213e 50%, #0a0a1a 100%);
+  background-size: 200% 100%;
+  animation: loading-shimmer 1.5s infinite;
+}
+
+@keyframes loading-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
