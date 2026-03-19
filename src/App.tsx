@@ -126,6 +126,8 @@ export default function App() {
 
   const webviewRef = useRef<WebviewContainerHandle>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const activeTabIdRef = useRef(tabState.activeTabId);
+  activeTabIdRef.current = tabState.activeTabId;
 
   const activeTab = tabState.tabs.find(t => t.id === tabState.activeTabId);
 
@@ -198,7 +200,7 @@ export default function App() {
   const handleThinkingChange = useCallback((tabId: number, thinking: boolean) => {
     setThinkingTabs(prev => ({ ...prev, [tabId]: thinking }));
     // When thinking stops (response done) and tab isn't active, mark unread
-    if (!thinking) {
+    if (!thinking && tabId !== activeTabIdRef.current) {
       setUnreadTabs(prev => ({ ...prev, [tabId]: true }));
     }
   }, []);

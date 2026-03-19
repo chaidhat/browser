@@ -258,10 +258,10 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       const text = inputValue.trim();
-      if (e.metaKey && text && messages.length === 0 && onOpenLink) {
-        // Cmd+Enter on first query → open Google search in a new page tab
+      if (e.metaKey && text && onNavigate) {
+        // Cmd+Enter → open Google search, converting this chat tab to a page tab
         setInputValue('');
-        onOpenLink(`https://www.google.com/search?q=${encodeURIComponent(text)}`);
+        onNavigate(`https://www.google.com/search?q=${encodeURIComponent(text)}`);
         return;
       }
       sendChat();
