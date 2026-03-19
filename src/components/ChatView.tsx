@@ -1,7 +1,14 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { IoSend, IoClose } from 'react-icons/io5';
+import { FiChevronDown } from 'react-icons/fi';
 import { renderContent } from '../utils/renderContent';
 import type { ChatMessage, ChatContentBlock, SerperResult } from '../preload';
+
+const MODELS = [
+  { id: 'gpt-5.4', label: 'GPT-5.4', keyField: 'openaiKey' as const },
+  { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', keyField: 'anthropicKey' as const },
+  { id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro', keyField: 'googleKey' as const },
+];
 
 export interface SearchResults {
   query: string;
@@ -25,6 +32,8 @@ interface Props {
   onNavigate?: (url: string) => void;
   onOpenLink?: (url: string) => void;
   onThinkingChange?: (tabId: number, thinking: boolean) => void;
+  initialQuery?: string;
+  onInitialQueryConsumed?: (tabId: number) => void;
 }
 
 function looksLikeUrl(input: string): boolean {
@@ -42,16 +51,20 @@ function fileToDataUrl(file: File): Promise<string> {
 
 let nextRequestId = 0;
 
-export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, onTitleChange, onNavigate, onOpenLink, onThinkingChange }: Props) {
+export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, onTitleChange, onNavigate, onOpenLink, onThinkingChange, initialQuery, onInitialQueryConsumed }: Props) {
   const [isTyping, setIsTyping] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [inputValue, setInputValue] = useState('');
   const [pendingImages, setPendingImages] = useState<string[]>([]);
   const [thinkingSeconds, setThinkingSeconds] = useState(0);
+  const [selectedModel, setSelectedModel] = useState('gpt-5.4');
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const thinkingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
 
   const hasStreamingContent = streamingContent.length > 0;
   useEffect(() => {
@@ -96,6 +109,24 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   }, [hidden]);
 
   useEffect(() => {
+    if (!modelMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
+        setModelMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [modelMenuOpen]);
+
+  useEffect(() => {
+    if (initialQuery) {
+      onInitialQueryConsumed?.(tabId);
+      sendChat(initialQuery);
+    }
+  }, [initialQuery]);
+
+  useEffect(() => {
     return () => { cleanupRef.current?.(); };
   }, []);
 
@@ -106,8 +137,8 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     setPendingImages(prev => [...prev, ...dataUrls]);
   }, []);
 
-  const sendChat = useCallback(async () => {
-    const text = inputValue.trim();
+  const sendChat = useCallback(async (overrideText?: string) => {
+    const text = (overrideText ?? inputValue).trim();
     if (!text && pendingImages.length === 0) return;
 
     // If no existing messages and input looks like a URL, navigate instead of chatting
@@ -220,8 +251,8 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
         onMessagesChange(tabId, [...finalMessages, { role: 'error', content: error }]);
         cleanupRef.current = null;
       },
-    });
-  }, [inputValue, pendingImages, messages, tabId, tabTitle, onMessagesChange, onTitleChange, onThinkingChange]);
+    }, selectedModel);
+  }, [inputValue, pendingImages, messages, tabId, tabTitle, selectedModel, onMessagesChange, onTitleChange, onThinkingChange]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -292,7 +323,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
           {messages.map((msg, i) => {
             if (msg.role === 'error') {
               return (
-                <div key={i} className="p-2.5 px-3.5 rounded-xl text-[13px] leading-relaxed max-w-[90%] break-words whitespace-pre-wrap bg-red-500/10 text-red-600 dark:text-red-400 self-start border border-red-500/20 text-xs">
+                <div key={i} className="p-2.5 px-3.5 rounded-xl text-sm leading-relaxed max-w-[90%] break-words whitespace-pre-wrap bg-red-500/10 text-red-600 dark:text-red-400 self-start border border-red-500/20 text-xs">
                   {msg.content}
                 </div>
               );
@@ -301,20 +332,20 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
               return (
                 <div
                   key={i}
-                  className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-[13px] leading-relaxed max-w-[90%] break-words text-black dark:text-neutral-200 self-start"
+                  className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-sm leading-relaxed max-w-[90%] break-words text-black dark:text-neutral-200 self-start"
                   dangerouslySetInnerHTML={{ __html: renderContent(msg.content) }}
                 />
               );
             }
             return (
               <div key={i} className="flex flex-col gap-2 self-end max-w-[90%]">
-                <div className="p-2.5 px-3.5 rounded-xl rounded-br-sm text-[13px] leading-relaxed break-words whitespace-pre-wrap bg-neutral-900 text-white">
+                <div className="p-2.5 px-3.5 rounded-xl rounded-br-sm text-sm leading-relaxed break-words whitespace-pre-wrap bg-neutral-100">
                   {msg.images && msg.images.map((img, j) => (
-                    <img key={j} src={img} className="block max-w-full max-h-[300px] rounded-lg mb-1.5 object-contain" />
+                    <img key={j} src={img} className="block max-w-full max-h-[300px] rounded-lg mb-1.5 object-contain cursor-pointer hover:opacity-80 transition-opacity" onClick={() => setLightboxImage(img)} />
                   ))}
                   {msg.content}
                 </div>
-                {msg.searchResults && msg.searchResults.results.length > 0 && (
+                {i === 0 && msg.searchResults && msg.searchResults.results.length > 0 && (
                   <div className="self-start w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 overflow-hidden">
                     <div className="px-3 py-1.5 text-[11px] font-medium text-neutral-500 dark:text-neutral-400 border-b border-neutral-200 dark:border-neutral-700">
                       Search results
@@ -337,11 +368,11 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
           {isTyping && (
             streamingContent ? (
               <div
-                className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-[13px] leading-relaxed max-w-[90%] break-words text-black dark:text-neutral-200 self-start"
+                className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-sm leading-relaxed max-w-[90%] break-words text-black dark:text-neutral-200 self-start"
                 dangerouslySetInnerHTML={{ __html: renderContent(streamingContent) }}
               />
             ) : (
-              <div className="p-2.5 px-3.5 rounded-xl text-[13px] leading-relaxed max-w-[90%] self-start bg-transparent text-neutral-400">
+              <div className="p-2.5 px-3.5 rounded-xl text-sm leading-relaxed max-w-[90%] self-start bg-transparent text-neutral-400">
                 <span className="inline-block bg-gradient-to-r from-neutral-400 via-black to-neutral-400 dark:from-neutral-500 dark:via-white dark:to-neutral-500 bg-[length:200%_100%] bg-clip-text [-webkit-background-clip:text] [-webkit-text-fill-color:transparent] animate-shimmer">
                   Thinking... {thinkingSeconds > 0 ? `${thinkingSeconds >= 60 ? `${Math.floor(thinkingSeconds / 60)}m ` : ''}${thinkingSeconds % 60}s` : ''}
                 </span>
@@ -366,7 +397,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             ))}
           </div>
         )}
-        <div className="flex items-end gap-2.5 p-6 pt-3">
+        <div className="flex items-end gap-2.5 px-6 py-3">
           <textarea
             ref={inputRef}
             className="flex-1 resize-none border border-neutral-300 dark:border-neutral-700 rounded-[10px] bg-white dark:bg-neutral-900 text-black dark:text-neutral-200 text-sm font-[inherit] p-2.5 px-3.5 outline-none max-h-[120px] transition-colors focus:border-black dark:focus:border-neutral-500 placeholder:text-neutral-400 dark:placeholder:text-neutral-600"
@@ -385,7 +416,46 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             <IoSend size={16} />
           </button>
         </div>
+        <div className="flex items-center px-6 pb-2 -mt-2">
+          <div className="relative" ref={modelMenuRef}>
+            <button
+              className="h-7 px-2.5 border-none rounded-lg bg-transparent text-[11px] font-medium text-neutral-400 dark:text-neutral-500 cursor-pointer flex items-center gap-1 transition-colors hover:text-neutral-600 dark:hover:text-neutral-300 whitespace-nowrap"
+              onClick={() => setModelMenuOpen(prev => !prev)}
+            >
+              {MODELS.find(m => m.id === selectedModel)?.label}
+              <FiChevronDown size={11} />
+            </button>
+            {modelMenuOpen && (
+              <div className="absolute bottom-full left-0 mb-1 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-lg overflow-hidden z-50 min-w-[160px]">
+                {MODELS.map(m => (
+                  <button
+                    key={m.id}
+                    className={`w-full text-left px-3 py-2 text-[12px] border-none cursor-pointer transition-colors ${
+                      m.id === selectedModel
+                        ? 'bg-neutral-100 dark:bg-neutral-700 text-black dark:text-neutral-200 font-medium'
+                        : 'bg-transparent text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700/50'
+                    }`}
+                    onClick={() => {
+                      setSelectedModel(m.id);
+                      setModelMenuOpen(false);
+                    }}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
+      {lightboxImage && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm cursor-pointer"
+          onClick={() => setLightboxImage(null)}
+        >
+          <img src={lightboxImage} className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl" />
+        </div>
+      )}
     </div>
   );
 }

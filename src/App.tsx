@@ -22,6 +22,7 @@ type TabAction =
   | { type: 'SWITCH_TAB'; id: number }
   | { type: 'UPDATE_TAB'; id: number; title?: string; url?: string }
   | { type: 'CONVERT_TAB'; id: number; url: string }
+  | { type: 'REORDER_TABS'; tabs: TabInfo[] }
   | { type: 'RESTORE'; state: TabState };
 
 function tabReducer(state: TabState, action: TabAction): TabState {
@@ -92,6 +93,9 @@ function tabReducer(state: TabState, action: TabAction): TabState {
         ),
       };
     }
+    case 'REORDER_TABS': {
+      return { ...state, tabs: action.tabs };
+    }
     case 'RESTORE': {
       return action.state;
     }
@@ -118,6 +122,7 @@ export default function App() {
   const [findMatches, setFindMatches] = useState({ active: 0, total: 0 });
   const [thinkingTabs, setThinkingTabs] = useState<Record<number, boolean>>({});
   const [unreadTabs, setUnreadTabs] = useState<Record<number, boolean>>({});
+  const [initialQueries, setInitialQueries] = useState<Record<number, string>>({});
 
   const webviewRef = useRef<WebviewContainerHandle>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
@@ -378,6 +383,19 @@ export default function App() {
     }
   }, [activeTab?.type, activeTab?.id]);
 
+  const handleSearch = useCallback((query: string) => {
+    // If current tab is an empty chat, use it; otherwise create a new chat tab
+    if (activeTab?.type === 'chat' && (!chatHistories[activeTab.id] || chatHistories[activeTab.id].length === 0)) {
+      setInitialQueries(prev => ({ ...prev, [activeTab.id]: query }));
+    } else {
+      // We need to create a new chat tab and set its initial query
+      // The tab ID will be tabState.nextTabId
+      const newTabId = tabState.nextTabId;
+      dispatch({ type: 'CREATE_TAB' });
+      setInitialQueries(prev => ({ ...prev, [newTabId]: query }));
+    }
+  }, [activeTab?.type, activeTab?.id, chatHistories, tabState.nextTabId]);
+
   const isChat = activeTab?.type === 'chat';
 
   return (
@@ -395,6 +413,7 @@ export default function App() {
         }}
         onClose={handleCloseTab}
         onCreate={() => dispatch({ type: 'CREATE_TAB' })}
+        onReorder={(tabs) => dispatch({ type: 'REORDER_TABS', tabs })}
       />
       <div className="flex-1 flex flex-col min-w-0 h-full bg-white dark:bg-neutral-900">
         <Toolbar
@@ -402,6 +421,7 @@ export default function App() {
           loading={activeTab ? !!loadingTabs[activeTab.id] : false}
           sidebarOpen={sidebarOpen}
           onNavigate={handleNavigate}
+          onSearch={handleSearch}
           onBack={() => webviewRef.current?.goBack()}
           onForward={() => webviewRef.current?.goForward()}
           onReload={() => webviewRef.current?.reload()}
@@ -430,6 +450,8 @@ export default function App() {
               onNavigate={(url) => dispatch({ type: 'CONVERT_TAB', id: tab.id, url })}
               onOpenLink={(url) => dispatch({ type: 'CREATE_TAB', url })}
               onThinkingChange={handleThinkingChange}
+              initialQuery={initialQueries[tab.id]}
+              onInitialQueryConsumed={(tabId) => setInitialQueries(prev => { const next = { ...prev }; delete next[tabId]; return next; })}
             />
           ))}
           <WebviewContainer

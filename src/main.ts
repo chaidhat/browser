@@ -10,6 +10,8 @@ app.setAsDefaultProtocolClient('https');
 
 interface Settings {
   openaiKey: string;
+  anthropicKey: string;
+  googleKey: string;
   braveKey: string;
   serperKey: string;
 }
@@ -20,9 +22,9 @@ const tabsPath = path.join(app.getPath('userData'), 'tabs.json');
 function loadSettings(): Settings {
   try {
     const data = fs.readFileSync(settingsPath, 'utf-8');
-    return { openaiKey: '', braveKey: '', serperKey: '', ...JSON.parse(data) };
+    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', ...JSON.parse(data) };
   } catch {
-    return { openaiKey: '', braveKey: '', serperKey: '' };
+    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '' };
   }
 }
 
@@ -217,6 +219,8 @@ ipcMain.handle('serper-search', async (_event, query: string) => {
 import { streamText, generateText, tool, stepCountIs } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import type { OpenAILanguageModelResponsesOptions } from '@ai-sdk/openai';
+import { createAnthropic } from '@ai-sdk/anthropic';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { z } from 'zod';
 
 interface ChatContentBlock {
@@ -290,26 +294,52 @@ function buildTools(settings: Settings) {
   return tools;
 }
 
-ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMessage[]) => {
+function getModelForId(settings: Settings, modelId: string) {
+  switch (modelId) {
+    case 'claude-opus-4-6': {
+      if (!settings.anthropicKey) return { error: 'No Anthropic API key configured. Open Settings to add one.' };
+      const anthropic = createAnthropic({ apiKey: settings.anthropicKey });
+      return { model: anthropic('claude-opus-4-6') };
+    }
+    case 'gemini-3.1-pro': {
+      if (!settings.googleKey) return { error: 'No Google API key configured. Open Settings to add one.' };
+      const google = createGoogleGenerativeAI({
+        apiKey: settings.googleKey,
+        baseURL: 'https://generativelanguage.googleapis.com/v1alpha',
+      });
+      return { model: google('gemini-3.1-pro-preview') };
+    }
+    case 'gpt-5.4':
+    default: {
+      if (!settings.openaiKey) return { error: 'No OpenAI API key configured. Open Settings to add one.' };
+      const openai = createOpenAI({ apiKey: settings.openaiKey });
+      return { model: openai.responses('gpt-5.4'), isOpenAI: true };
+    }
+  }
+}
+
+ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMessage[], modelId?: string) => {
   const settings = loadSettings();
-  if (!settings.openaiKey) {
-    event.sender.send('chat-stream-error', requestId, 'No OpenAI API key configured. Open Settings to add one.');
+  const resolved = getModelForId(settings, modelId || 'gpt-5.4');
+  if ('error' in resolved) {
+    event.sender.send('chat-stream-error', requestId, resolved.error);
     return;
   }
 
   try {
-    const openai = createOpenAI({ apiKey: settings.openaiKey });
     const tools = buildTools(settings);
     const result = streamText({
-      model: openai.responses('gpt-5.4'),
+      model: resolved.model,
       messages: toSdkMessages(messages) as any,
       tools,
       stopWhen: stepCountIs(5),
-      providerOptions: {
-        openai: {
-          reasoningEffort: 'high',
-        } satisfies OpenAILanguageModelResponsesOptions,
-      },
+      ...(resolved.isOpenAI ? {
+        providerOptions: {
+          openai: {
+            reasoningEffort: 'high',
+          } satisfies OpenAILanguageModelResponsesOptions,
+        },
+      } : {}),
       onError({ error }) {
         const message = error instanceof Error ? error.message : String(error);
         event.sender.send('chat-stream-error', requestId, `Stream error: ${message}`);

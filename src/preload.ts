@@ -13,6 +13,8 @@ export interface ChatMessage {
 
 export interface Settings {
   openaiKey: string;
+  anthropicKey: string;
+  googleKey: string;
   braveKey: string;
   serperKey: string;
 }
@@ -49,7 +51,7 @@ export interface DownloadDoneEvent {
 }
 
 export interface BrowserAPI {
-  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks) => () => void;
+  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks, modelId?: string) => () => void;
   chatGenerateTitle: (userMessage: string) => Promise<string | null>;
   getSettings: () => Promise<Settings>;
   saveSettings: (settings: Settings) => Promise<boolean>;
@@ -67,7 +69,7 @@ export interface BrowserAPI {
 }
 
 contextBridge.exposeInMainWorld('browser', {
-  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks) => {
+  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks, modelId?: string) => {
     const onChunk = (_event: unknown, id: string, chunk: string) => {
       if (id === requestId) callbacks.onChunk(chunk);
     };
@@ -93,7 +95,7 @@ contextBridge.exposeInMainWorld('browser', {
     ipcRenderer.on('chat-stream-chunk', onChunk);
     ipcRenderer.on('chat-stream-done', onDone);
     ipcRenderer.on('chat-stream-error', onError);
-    ipcRenderer.send('chat-send-stream', requestId, messages);
+    ipcRenderer.send('chat-send-stream', requestId, messages, modelId);
 
     return cleanup;
   },

@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { FiChevronLeft, FiChevronRight, FiRefreshCw, FiMessageSquare, FiSettings } from 'react-icons/fi';
-import { resolveUrl } from '../utils/navigate';
+import { resolveUrl, isUrl } from '../utils/navigate';
 
 interface Props {
   activeUrl: string;
   loading: boolean;
   sidebarOpen: boolean;
   onNavigate: (url: string) => void;
+  onSearch: (query: string) => void;
   onBack: () => void;
   onForward: () => void;
   onReload: () => void;
@@ -19,7 +20,7 @@ const btnClass = "w-8 h-8 border-none rounded-md bg-transparent text-neutral-500
 
 export function Toolbar({
   activeUrl, loading, sidebarOpen,
-  onNavigate, onBack, onForward, onReload,
+  onNavigate, onSearch, onBack, onForward, onReload,
   onToggleChat, onOpenSettings, isChatTab,
 }: Props) {
   const [urlValue, setUrlValue] = useState(activeUrl);
@@ -32,9 +33,17 @@ export function Toolbar({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       const value = urlValue.trim();
-      if (value) {
+      if (!value) return;
+      inputRef.current?.blur();
+      if (e.metaKey) {
+        // Cmd+Enter → always Google
+        onNavigate(`https://www.google.com/search?q=${encodeURIComponent(value)}`);
+      } else if (isUrl(value)) {
+        // Looks like a URL → navigate directly
         onNavigate(resolveUrl(value));
-        inputRef.current?.blur();
+      } else {
+        // Plain text → chat + serper
+        onSearch(value);
       }
     }
   };
@@ -56,7 +65,7 @@ export function Toolbar({
         <input
           ref={inputRef}
           type="text"
-          className={`w-full h-8 px-3.5 border border-neutral-300 dark:border-neutral-600 rounded-lg bg-white dark:bg-neutral-800 text-black dark:text-neutral-200 text-[13px] outline-none transition-all focus:border-black dark:focus:border-neutral-400 focus:shadow-[0_0_0_2px_rgba(0,0,0,0.1)] dark:focus:shadow-[0_0_0_2px_rgba(255,255,255,0.1)] placeholder:text-neutral-400 dark:placeholder:text-neutral-500 ${loading ? 'bg-[length:200%_100%] animate-loading bg-gradient-to-r from-white via-neutral-100 to-white dark:from-neutral-700 dark:via-neutral-600 dark:to-neutral-700' : ''}`}
+          className={`w-full h-8 px-3.5 border-none rounded-lg bg-neutral-100 dark:bg-neutral-900 text-black dark:text-neutral-200 text-[13px] outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500 ${loading ? 'bg-[length:200%_100%] animate-loading bg-gradient-to-r from-white via-neutral-100 to-white dark:from-neutral-700 dark:via-neutral-600 dark:to-neutral-700' : ''}`}
           placeholder="Search or enter URL"
           spellCheck={false}
           autoComplete="off"
