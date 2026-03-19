@@ -257,6 +257,13 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      const text = inputValue.trim();
+      if (e.metaKey && text && messages.length === 0 && onOpenLink) {
+        // Cmd+Enter on first query → open Google search in a new page tab
+        setInputValue('');
+        onOpenLink(`https://www.google.com/search?q=${encodeURIComponent(text)}`);
+        return;
+      }
       sendChat();
     }
   };

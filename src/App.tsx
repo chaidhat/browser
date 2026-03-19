@@ -209,14 +209,18 @@ export default function App() {
     });
 
     window.browser.onDownloadStarted((event) => {
-      setDownloads(prev => [...prev, {
-        id: event.id,
-        fileName: event.fileName,
-        totalBytes: event.totalBytes,
-        receivedBytes: 0,
-        savePath: event.savePath,
-        state: 'downloading',
-      }]);
+      setDownloads(prev => {
+        // Deduplicate — if a download with the same savePath is already active, replace it
+        const filtered = prev.filter(dl => dl.savePath !== event.savePath || dl.state !== 'downloading');
+        return [...filtered, {
+          id: event.id,
+          fileName: event.fileName,
+          totalBytes: event.totalBytes,
+          receivedBytes: 0,
+          savePath: event.savePath,
+          state: 'downloading',
+        }];
+      });
     });
 
     window.browser.onDownloadProgress((event) => {

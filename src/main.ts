@@ -94,37 +94,38 @@ function createWindow(): void {
     // Enable pinch-to-zoom on webview content
     webContents.setVisualZoomLevelLimits(1, 5);
 
-    // Handle downloads from webviews
-    webContents.session.on('will-download', (_dlEvent, item) => {
-      const fileName = item.getFilename();
-      const totalBytes = item.getTotalBytes();
-      const downloadId = Date.now().toString();
-      const savePath = path.join(app.getPath('downloads'), fileName);
-      item.setSavePath(savePath);
+  });
 
-      mainWindow?.webContents.send('download-started', {
-        id: downloadId,
-        fileName,
-        totalBytes,
-        savePath,
-      });
+  // Handle downloads — register once on the default session to avoid listener leaks
+  session.defaultSession.on('will-download', (_dlEvent, item) => {
+    const fileName = item.getFilename();
+    const totalBytes = item.getTotalBytes();
+    const downloadId = Date.now().toString();
+    const savePath = path.join(app.getPath('downloads'), fileName);
+    item.setSavePath(savePath);
 
-      item.on('updated', (_updEvent, state) => {
-        if (state === 'progressing') {
-          mainWindow?.webContents.send('download-progress', {
-            id: downloadId,
-            receivedBytes: item.getReceivedBytes(),
-            totalBytes: item.getTotalBytes(),
-          });
-        }
-      });
+    mainWindow?.webContents.send('download-started', {
+      id: downloadId,
+      fileName,
+      totalBytes,
+      savePath,
+    });
 
-      item.once('done', (_doneEvent, state) => {
-        mainWindow?.webContents.send('download-done', {
+    item.on('updated', (_updEvent, state) => {
+      if (state === 'progressing') {
+        mainWindow?.webContents.send('download-progress', {
           id: downloadId,
-          state, // 'completed', 'cancelled', 'interrupted'
-          savePath: item.getSavePath(),
+          receivedBytes: item.getReceivedBytes(),
+          totalBytes: item.getTotalBytes(),
         });
+      }
+    });
+
+    item.once('done', (_doneEvent, state) => {
+      mainWindow?.webContents.send('download-done', {
+        id: downloadId,
+        state, // 'completed', 'cancelled', 'interrupted'
+        savePath: item.getSavePath(),
       });
     });
   });
