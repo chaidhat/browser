@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { IoSend, IoClose } from 'react-icons/io5';
 import { FiChevronDown } from 'react-icons/fi';
 import { renderContent } from '../utils/renderContent';
-import type { ChatMessage, ChatContentBlock, SerperResult } from '../preload';
+import type { ChatMessage, ChatContentBlock, SerperResult, HistoryEntry } from '../preload';
 
 const MODELS = [
   { id: 'gpt-5.4', label: 'GPT-5.4', keyField: 'openaiKey' as const },
@@ -34,6 +34,7 @@ interface Props {
   onThinkingChange?: (tabId: number, thinking: boolean) => void;
   initialQuery?: string;
   onInitialQueryConsumed?: (tabId: number) => void;
+  visitHistory?: HistoryEntry[];
 }
 
 function looksLikeUrl(input: string): boolean {
@@ -51,7 +52,7 @@ function fileToDataUrl(file: File): Promise<string> {
 
 let nextRequestId = 0;
 
-export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, onTitleChange, onNavigate, onOpenLink, onThinkingChange, initialQuery, onInitialQueryConsumed }: Props) {
+export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, onTitleChange, onNavigate, onOpenLink, onThinkingChange, initialQuery, onInitialQueryConsumed, visitHistory = [] }: Props) {
   const [isTyping, setIsTyping] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [inputValue, setInputValue] = useState('');
@@ -60,11 +61,39 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   const [selectedModel, setSelectedModel] = useState('gpt-5.4');
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
+  const [acIndex, setAcIndex] = useState(-1);
+  const [showAc, setShowAc] = useState(false);
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const thinkingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
+
+  const acSuggestions = useMemo(() => {
+    if (messages.length > 0) return [];
+    const q = inputValue.trim().toLowerCase();
+    if (!q) return [];
+    const results: { url: string; title: string; score: number }[] = [];
+    const seen = new Set<string>();
+    for (const entry of visitHistory) {
+      if (seen.has(entry.url)) continue;
+      const urlLower = entry.url.toLowerCase();
+      const titleLower = (entry.title || '').toLowerCase();
+      if (urlLower.includes(q) || titleLower.includes(q)) {
+        const domain = urlLower.replace(/^https?:\/\//, '').split('/')[0];
+        const score = domain.startsWith(q) ? 90 : 40 + Math.min(entry.visitCount, 10);
+        results.push({ url: entry.url, title: entry.title, score });
+        seen.add(entry.url);
+      }
+    }
+    results.sort((a, b) => b.score - a.score);
+    return results.slice(0, 6);
+  }, [inputValue, messages.length, visitHistory]);
+
+  useEffect(() => {
+    setShowAc(acSuggestions.length > 0);
+    setAcIndex(-1);
+  }, [acSuggestions]);
 
   const hasStreamingContent = streamingContent.length > 0;
   useEffect(() => {
@@ -254,7 +283,20 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     }, selectedModel);
   }, [inputValue, pendingImages, messages, tabId, tabTitle, selectedModel, onMessagesChange, onTitleChange, onThinkingChange]);
 
+  const acceptAcSuggestion = (s: { url: string }) => {
+    setShowAc(false);
+    setInputValue('');
+    onNavigate?.(s.url);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (showAc) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setAcIndex(i => (i + 1) % acSuggestions.length); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setAcIndex(i => (i - 1 + acSuggestions.length) % acSuggestions.length); return; }
+      if (e.key === 'Tab' && acIndex >= 0) { e.preventDefault(); setInputValue(acSuggestions[acIndex].url); setShowAc(false); return; }
+      if (e.key === 'Escape') { setShowAc(false); return; }
+      if (e.key === 'Enter' && !e.shiftKey && acIndex >= 0) { e.preventDefault(); acceptAcSuggestion(acSuggestions[acIndex]); return; }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       const text = inputValue.trim();
@@ -346,7 +388,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             }
             return (
               <div key={i} className="flex flex-col gap-2 self-end max-w-[90%]">
-                <div className="p-2.5 px-3.5 rounded-xl rounded-br-sm text-sm leading-relaxed break-words whitespace-pre-wrap bg-neutral-100">
+                <div className="p-2.5 px-3.5 rounded-xl rounded-br-sm text-sm leading-relaxed break-words whitespace-pre-wrap bg-neutral-100 dark:bg-neutral-900 dark:text-neutral-200">
                   {msg.images && msg.images.map((img, j) => (
                     <img key={j} src={img} className="block max-w-full max-h-[300px] rounded-lg mb-1.5 object-contain cursor-pointer hover:opacity-80 transition-opacity" onClick={() => setLightboxImage(img)} />
                   ))}
@@ -400,6 +442,24 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
                 >
                   <IoClose size={12} />
                 </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {showAc && (
+          <div className="mx-6 mt-2 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-lg overflow-hidden">
+            {acSuggestions.map((s, i) => (
+              <div
+                key={s.url}
+                className={`px-3 py-1.5 text-[13px] cursor-pointer flex items-center gap-2 truncate ${
+                  i === acIndex
+                    ? 'bg-blue-500 text-white'
+                    : 'text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700'
+                }`}
+                onMouseDown={(e) => { e.preventDefault(); acceptAcSuggestion(s); }}
+              >
+                <span className="truncate font-medium">{s.title || s.url}</span>
+                {s.title && <span className={`truncate text-[11px] ${i === acIndex ? 'text-white/70' : 'text-neutral-400 dark:text-neutral-500'}`}>{s.url}</span>}
               </div>
             ))}
           </div>

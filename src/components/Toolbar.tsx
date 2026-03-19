@@ -1,6 +1,25 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { FiChevronLeft, FiChevronRight, FiRefreshCw, FiMessageSquare, FiSettings } from 'react-icons/fi';
 import { resolveUrl, isUrl } from '../utils/navigate';
+
+interface TabInfo {
+  id: number;
+  title: string;
+  url: string;
+  type: 'chat' | 'page';
+}
+
+interface HistoryEntry {
+  url: string;
+  title: string;
+  visitCount: number;
+  lastVisited: number;
+}
+
+interface Suggestion {
+  url: string;
+  title: string;
+}
 
 interface Props {
   activeUrl: string;
@@ -14,6 +33,8 @@ interface Props {
   onToggleChat: () => void;
   onOpenSettings: () => void;
   isChatTab?: boolean;
+  allTabs?: TabInfo[];
+  visitHistory?: HistoryEntry[];
 }
 
 const btnClass = "w-8 h-8 border-none rounded-md bg-transparent text-neutral-500 dark:text-neutral-400 cursor-pointer flex items-center justify-center transition-colors hover:bg-black/6 dark:hover:bg-white/6 hover:text-black dark:hover:text-neutral-200 active:bg-black/10 dark:active:bg-white/12";
@@ -22,27 +43,106 @@ export function Toolbar({
   activeUrl, loading, sidebarOpen,
   onNavigate, onSearch, onBack, onForward, onReload,
   onToggleChat, onOpenSettings, isChatTab,
+  allTabs = [], visitHistory = [],
 }: Props) {
   const [urlValue, setUrlValue] = useState(activeUrl);
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  const [showDropdown, setShowDropdown] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setUrlValue(activeUrl);
+    setShowDropdown(false);
   }, [activeUrl]);
 
+  const suggestions = useMemo((): Suggestion[] => {
+    const q = urlValue.trim().toLowerCase();
+    if (!q || q === activeUrl.toLowerCase()) return [];
+
+    const seen = new Set<string>();
+    const results: (Suggestion & { score: number })[] = [];
+
+    // Match against open tabs
+    for (const tab of allTabs) {
+      if (!tab.url || tab.type === 'chat' || seen.has(tab.url)) continue;
+      const urlLower = tab.url.toLowerCase();
+      const titleLower = (tab.title || '').toLowerCase();
+      if (urlLower.includes(q) || titleLower.includes(q)) {
+        const domain = urlLower.replace(/^https?:\/\//, '').split('/')[0];
+        const score = domain.startsWith(q) ? 100 : urlLower.includes(q) ? 50 : 30;
+        results.push({ url: tab.url, title: tab.title, score });
+        seen.add(tab.url);
+      }
+    }
+
+    // Match against visit history
+    for (const entry of visitHistory) {
+      if (seen.has(entry.url)) continue;
+      const urlLower = entry.url.toLowerCase();
+      const titleLower = (entry.title || '').toLowerCase();
+      if (urlLower.includes(q) || titleLower.includes(q)) {
+        const domain = urlLower.replace(/^https?:\/\//, '').split('/')[0];
+        const score = domain.startsWith(q) ? 90 : (urlLower.includes(q) ? 40 : 20) + Math.min(entry.visitCount, 10);
+        results.push({ url: entry.url, title: entry.title, score });
+        seen.add(entry.url);
+      }
+    }
+
+    results.sort((a, b) => b.score - a.score);
+    return results.slice(0, 8);
+  }, [urlValue, activeUrl, allTabs, visitHistory]);
+
+  useEffect(() => {
+    setShowDropdown(suggestions.length > 0);
+    setSelectedIndex(-1);
+  }, [suggestions]);
+
+  const acceptSuggestion = (s: Suggestion) => {
+    setUrlValue(s.url);
+    setShowDropdown(false);
+    inputRef.current?.blur();
+    onNavigate(s.url);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (showDropdown) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedIndex(i => (i + 1) % suggestions.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedIndex(i => (i - 1 + suggestions.length) % suggestions.length);
+        return;
+      }
+      if (e.key === 'Tab' && selectedIndex >= 0) {
+        e.preventDefault();
+        setUrlValue(suggestions[selectedIndex].url);
+        setShowDropdown(false);
+        return;
+      }
+      if (e.key === 'Escape') {
+        setShowDropdown(false);
+        return;
+      }
+    }
+
     if (e.key === 'Enter') {
+      if (showDropdown && selectedIndex >= 0) {
+        e.preventDefault();
+        acceptSuggestion(suggestions[selectedIndex]);
+        return;
+      }
       const value = urlValue.trim();
       if (!value) return;
+      setShowDropdown(false);
       inputRef.current?.blur();
       if (e.metaKey) {
-        // Cmd+Enter → always Google
         onNavigate(`https://www.google.com/search?q=${encodeURIComponent(value)}`);
       } else if (isUrl(value)) {
-        // Looks like a URL → navigate directly
         onNavigate(resolveUrl(value));
       } else {
-        // Plain text → chat + serper
         onSearch(value);
       }
     }
@@ -61,7 +161,7 @@ export function Toolbar({
           <FiRefreshCw size={14} />
         </button>
       </div>
-      <div className="flex-1 no-drag">
+      <div className="flex-1 no-drag relative">
         <input
           ref={inputRef}
           type="text"
@@ -73,7 +173,26 @@ export function Toolbar({
           onChange={(e) => setUrlValue(e.target.value)}
           onKeyDown={handleKeyDown}
           onFocus={() => inputRef.current?.select()}
+          onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
         />
+        {showDropdown && (
+          <div className="absolute top-full left-0 right-0 z-50 mt-1 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-lg overflow-hidden">
+            {suggestions.map((s, i) => (
+              <div
+                key={s.url}
+                className={`px-3 py-1.5 text-[13px] cursor-pointer flex items-center gap-2 truncate ${
+                  i === selectedIndex
+                    ? 'bg-blue-500 text-white'
+                    : 'text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700'
+                }`}
+                onMouseDown={(e) => { e.preventDefault(); acceptSuggestion(s); }}
+              >
+                <span className="truncate font-medium">{s.title || s.url}</span>
+                {s.title && <span className={`truncate text-[11px] ${i === selectedIndex ? 'text-white/70' : 'text-neutral-400 dark:text-neutral-500'}`}>{s.url}</span>}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <div className="flex gap-0.5 no-drag">
         {!isChatTab && (

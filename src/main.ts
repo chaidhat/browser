@@ -18,6 +18,7 @@ interface Settings {
 
 const settingsPath = path.join(app.getPath('userData'), 'settings.json');
 const tabsPath = path.join(app.getPath('userData'), 'tabs.json');
+const historyPath = path.join(app.getPath('userData'), 'history.json');
 
 function loadSettings(): Settings {
   try {
@@ -158,6 +159,21 @@ ipcMain.handle('load-tabs', () => {
 
 ipcMain.handle('save-tabs', (_event, data: unknown) => {
   fs.writeFileSync(tabsPath, JSON.stringify(data));
+  return true;
+});
+
+// History persistence IPC
+ipcMain.handle('load-history', () => {
+  try {
+    const data = fs.readFileSync(historyPath, 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return [];
+  }
+});
+
+ipcMain.handle('save-history', (_event, data: unknown) => {
+  fs.writeFileSync(historyPath, JSON.stringify(data));
   return true;
 });
 

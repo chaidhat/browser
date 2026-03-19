@@ -50,6 +50,13 @@ export interface DownloadDoneEvent {
   savePath: string;
 }
 
+export interface HistoryEntry {
+  url: string;
+  title: string;
+  visitCount: number;
+  lastVisited: number;
+}
+
 export interface BrowserAPI {
   chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks, modelId?: string) => () => void;
   chatGenerateTitle: (userMessage: string) => Promise<string | null>;
@@ -57,6 +64,8 @@ export interface BrowserAPI {
   saveSettings: (settings: Settings) => Promise<boolean>;
   loadTabs: () => Promise<unknown>;
   saveTabs: (data: unknown) => Promise<boolean>;
+  loadHistory: () => Promise<HistoryEntry[]>;
+  saveHistory: (data: HistoryEntry[]) => Promise<boolean>;
   onOpenUrl: (callback: (url: string) => void) => void;
   onDownloadStarted: (callback: (event: DownloadStartedEvent) => void) => void;
   onDownloadProgress: (callback: (event: DownloadProgressEvent) => void) => void;
@@ -104,6 +113,8 @@ contextBridge.exposeInMainWorld('browser', {
   saveSettings: (settings: Settings) => ipcRenderer.invoke('save-settings', settings),
   loadTabs: () => ipcRenderer.invoke('load-tabs'),
   saveTabs: (data: unknown) => ipcRenderer.invoke('save-tabs', data),
+  loadHistory: () => ipcRenderer.invoke('load-history'),
+  saveHistory: (data: HistoryEntry[]) => ipcRenderer.invoke('save-history', data),
   onOpenUrl: (callback: (url: string) => void) => {
     ipcRenderer.on('open-url-in-new-tab', (_event, url: string) => callback(url));
   },

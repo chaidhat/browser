@@ -123,6 +123,7 @@ export default function App() {
   const [thinkingTabs, setThinkingTabs] = useState<Record<number, boolean>>({});
   const [unreadTabs, setUnreadTabs] = useState<Record<number, boolean>>({});
   const [initialQueries, setInitialQueries] = useState<Record<number, string>>({});
+  const [visitHistory, setVisitHistory] = useState<{ url: string; title: string; visitCount: number; lastVisited: number }[]>([]);
 
   const webviewRef = useRef<WebviewContainerHandle>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
@@ -151,6 +152,8 @@ export default function App() {
       } else {
         dispatch({ type: 'CREATE_TAB' });
       }
+      const savedHistory = await window.browser.loadHistory();
+      if (savedHistory?.length) setVisitHistory(savedHistory);
       setInitialized(true);
     })();
   }, []);
@@ -168,6 +171,15 @@ export default function App() {
     }, 500);
   }, [tabState, chatHistories, initialized]);
 
+  const historySaveRef = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => {
+    if (!initialized) return;
+    if (historySaveRef.current) clearTimeout(historySaveRef.current);
+    historySaveRef.current = setTimeout(() => {
+      window.browser.saveHistory(visitHistory);
+    }, 2000);
+  }, [visitHistory, initialized]);
+
   const handleCloseTab = useCallback((id: number) => {
     dispatch({ type: 'CLOSE_TAB', id });
     setChatHistories(prev => {
@@ -179,7 +191,27 @@ export default function App() {
 
   const handleTabUpdate = useCallback((id: number, updates: { title?: string; url?: string }) => {
     dispatch({ type: 'UPDATE_TAB', id, ...updates });
-  }, []);
+    if (updates.url && updates.url !== 'about:blank') {
+      setVisitHistory(prev => {
+        const existing = prev.find(h => h.url === updates.url);
+        if (existing) {
+          return prev.map(h => h.url === updates.url
+            ? { ...h, visitCount: h.visitCount + 1, lastVisited: Date.now(), title: updates.title || h.title }
+            : h
+          );
+        }
+        const entry = { url: updates.url!, title: updates.title || '', visitCount: 1, lastVisited: Date.now() };
+        return [...prev, entry].slice(-500);
+      });
+    }
+    if (updates.title && !updates.url) {
+      setVisitHistory(prev => {
+        const tab = tabState.tabs.find(t => t.id === id);
+        if (!tab?.url) return prev;
+        return prev.map(h => h.url === tab.url ? { ...h, title: updates.title! } : h);
+      });
+    }
+  }, [tabState.tabs]);
 
   const handleLoadingChange = useCallback((tabId: number, isLoading: boolean) => {
     setLoadingTabs(prev => ({ ...prev, [tabId]: isLoading }));
@@ -434,6 +466,8 @@ export default function App() {
           onToggleChat={() => setSidebarOpen(prev => !prev)}
           onOpenSettings={() => setSettingsOpen(true)}
           isChatTab={isChat}
+          allTabs={tabState.tabs}
+          visitHistory={visitHistory}
         />
         <div className="flex flex-1 min-h-0 relative">
           {findOpen && (
@@ -458,6 +492,7 @@ export default function App() {
               onThinkingChange={handleThinkingChange}
               initialQuery={initialQueries[tab.id]}
               onInitialQueryConsumed={(tabId) => setInitialQueries(prev => { const next = { ...prev }; delete next[tabId]; return next; })}
+              visitHistory={visitHistory}
             />
           ))}
           <WebviewContainer
