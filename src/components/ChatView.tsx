@@ -68,6 +68,9 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   const [showImages, setShowImages] = useState<Record<number, boolean>>({});
   const [acIndex, setAcIndex] = useState(-1);
   const [showAc, setShowAc] = useState(false);
+  const [ghostSuggestion, setGhostSuggestion] = useState<string | null>(null);
+  const ghostRequestRef = useRef(0);
+  const suggestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
@@ -81,14 +84,17 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     const results: { url: string; title: string; score: number }[] = [];
     const seen = new Set<string>();
     for (const entry of visitHistory) {
-      if (seen.has(entry.url)) continue;
-      const urlLower = entry.url.toLowerCase();
+      // Strip to origin (scheme + domain, no path)
+      let origin: string;
+      try { origin = new URL(entry.url).origin; } catch { continue; }
+      if (seen.has(origin)) continue;
+      const originLower = origin.toLowerCase();
+      const domain = originLower.replace(/^https?:\/\//, '');
       const titleLower = (entry.title || '').toLowerCase();
-      if (urlLower.includes(q) || titleLower.includes(q)) {
-        const domain = urlLower.replace(/^https?:\/\//, '').split('/')[0];
+      if (domain.includes(q) || titleLower.includes(q)) {
         const score = domain.startsWith(q) ? 90 : 40 + Math.min(entry.visitCount, 10);
-        results.push({ url: entry.url, title: entry.title, score });
-        seen.add(entry.url);
+        results.push({ url: origin, title: entry.title, score });
+        seen.add(origin);
       }
     }
     results.sort((a, b) => b.score - a.score);
@@ -99,6 +105,29 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     setShowAc(acSuggestions.length > 0);
     setAcIndex(-1);
   }, [acSuggestions]);
+
+  // Debounced inline suggestion from gpt-5.4-nano
+  useEffect(() => {
+    if (suggestTimerRef.current) clearTimeout(suggestTimerRef.current);
+    if (isTyping) { setGhostSuggestion(null); return; }
+    const trimmed = inputValue.trim();
+    // Allow empty input (suggest a question) or 3+ chars
+    if (trimmed.length > 0 && trimmed.length < 3) { setGhostSuggestion(null); return; }
+    const reqId = ++ghostRequestRef.current;
+    suggestTimerRef.current = setTimeout(async () => {
+      const apiMessages = messages.filter(m => m.role !== 'error').map(m => ({
+        role: m.role as 'user' | 'assistant' | 'system',
+        content: m.content,
+      }));
+      const suggestion = await window.browser.chatSuggest(apiMessages, trimmed);
+      if (ghostRequestRef.current === reqId && suggestion) {
+        setGhostSuggestion(suggestion);
+      } else if (ghostRequestRef.current === reqId) {
+        setGhostSuggestion(null);
+      }
+    }, trimmed ? 300 : 500);
+    return () => { if (suggestTimerRef.current) clearTimeout(suggestTimerRef.current); };
+  }, [inputValue, messages, isTyping]);
 
   const hasStreamingContent = streamingContent.length > 0;
   useEffect(() => {
@@ -316,6 +345,17 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
       if (e.key === 'Escape') { setShowAc(false); return; }
       if (e.key === 'Enter' && !e.shiftKey && acIndex >= 0) { e.preventDefault(); acceptAcSuggestion(acSuggestions[acIndex]); return; }
     }
+    // Tab to accept ghost suggestion into input
+    if (e.key === 'Tab' && ghostSuggestion) {
+      e.preventDefault();
+      setInputValue(inputValue + ghostSuggestion);
+      setGhostSuggestion(null);
+      return;
+    }
+    if (e.key === 'Escape' && ghostSuggestion) {
+      setGhostSuggestion(null);
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       const text = inputValue.trim();
@@ -331,6 +371,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInputValue(e.target.value);
+    setGhostSuggestion(null);
     const textarea = e.target;
     textarea.style.height = 'auto';
     textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
@@ -389,7 +430,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
           {messages.map((msg, i) => {
             if (msg.role === 'error') {
               return (
-                <div key={i} className="p-2.5 px-3.5 rounded-xl text-sm leading-relaxed max-w-[90%] break-words whitespace-pre-wrap bg-red-500/10 text-red-600 dark:text-red-400 self-start border border-red-500/20 text-xs">
+                <div key={i} className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] break-words whitespace-pre-wrap bg-red-500/10 text-red-600 dark:text-red-400 self-start border border-red-500/20" style={{ fontFamily: "'Noto Serif', serif" }}>
                   {msg.content}
                 </div>
               );
@@ -398,14 +439,15 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
               return (
                 <div
                   key={i}
-                  className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-sm leading-relaxed max-w-[90%] break-words text-black dark:text-neutral-200 self-start"
+                  className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-[15px] leading-relaxed max-w-[90%] break-words text-black dark:text-neutral-200 self-start"
+                  style={{ fontFamily: "'Noto Serif', serif" }}
                   dangerouslySetInnerHTML={{ __html: renderContent(msg.content) }}
                 />
               );
             }
             return (
               <div key={i} className="flex flex-col gap-2 self-end max-w-[90%]">
-                <div className="p-2.5 px-3.5 rounded-xl rounded-br-sm text-sm leading-relaxed break-words whitespace-pre-wrap bg-neutral-100 dark:bg-neutral-900 dark:text-neutral-200">
+                <div className="p-2.5 px-3.5 rounded-xl rounded-br-sm text-[15px] leading-relaxed break-words whitespace-pre-wrap bg-neutral-100 dark:bg-neutral-900 dark:text-neutral-200" style={{ fontFamily: "'Noto Serif', serif" }}>
                   {msg.images && msg.images.map((img, j) => (
                     <img key={j} src={img} className="block max-w-full max-h-[300px] rounded-lg mb-1.5 object-contain cursor-pointer hover:opacity-80 transition-opacity" onClick={() => setLightboxImage(img)} />
                   ))}
@@ -458,11 +500,12 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
           {isTyping && (
             streamingContent ? (
               <div
-                className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-sm leading-relaxed max-w-[90%] break-words text-black dark:text-neutral-200 self-start"
+                className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-[15px] leading-relaxed max-w-[90%] break-words text-black dark:text-neutral-200 self-start"
+                style={{ fontFamily: "'Noto Serif', serif" }}
                 dangerouslySetInnerHTML={{ __html: renderContent(streamingContent) }}
               />
             ) : (
-              <div className="p-2.5 px-3.5 rounded-xl text-sm leading-relaxed max-w-[90%] self-start bg-transparent text-neutral-400">
+              <div className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] self-start bg-transparent text-neutral-400" style={{ fontFamily: "'Noto Serif', serif" }}>
                 <span className="inline-block bg-gradient-to-r from-neutral-300 via-neutral-500 to-neutral-300 dark:from-neutral-600 dark:via-neutral-300 dark:to-neutral-600 bg-[length:200%_100%] bg-clip-text [-webkit-background-clip:text] [-webkit-text-fill-color:transparent] animate-shimmer">
                   Thinking... {thinkingSeconds > 0 ? `${thinkingSeconds >= 60 ? `${Math.floor(thinkingSeconds / 60)}m ${Math.floor(thinkingSeconds % 60)}s` : `${Math.floor(thinkingSeconds)}s`}` : ''}
                 </span>
@@ -495,16 +538,26 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
           </div>
         )}
         <div className="relative flex items-end gap-2.5 pb-3 no-drag w-full">
-          <textarea
-            ref={inputRef}
-            className="h-10 flex-1 resize-none border border-neutral-200 dark:border-neutral-700 rounded-[10px] bg-white dark:bg-neutral-900 text-black dark:text-neutral-200 text-sm font-[inherit] p-2.5 px-3.5 outline-none max-h-[120px] transition-colors placeholder:text-neutral-400 dark:placeholder:text-neutral-600"
-            placeholder="Ask anything..."
-            rows={1}
-            value={inputValue}
-            onChange={handleInput}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-          />
+          <div className="relative flex-1">
+            <textarea
+              ref={inputRef}
+              className="h-10 w-full resize-none border border-neutral-200 dark:border-neutral-700 rounded-[10px] bg-white dark:bg-neutral-900 text-black dark:text-neutral-200 text-sm font-[inherit] p-2.5 px-3.5 outline-none max-h-[120px] transition-colors placeholder:text-neutral-400 dark:placeholder:text-neutral-600"
+              placeholder={ghostSuggestion && !inputValue ? '' : 'Ask anything...'}
+              rows={1}
+              value={inputValue}
+              onChange={handleInput}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+            />
+            {ghostSuggestion && (
+              <div
+                className="absolute inset-0 pointer-events-none border border-transparent rounded-[10px] p-2.5 px-3.5 text-sm font-[inherit] overflow-hidden whitespace-nowrap text-ellipsis h-10"
+              >
+                {inputValue && <span className="invisible whitespace-pre">{inputValue}</span>}
+                <span className="text-neutral-400 dark:text-neutral-600">{ghostSuggestion}</span>
+              </div>
+            )}
+          </div>
           <button
             className="w-10 h-10 border-none rounded-[10px] bg-neutral-900 dark:bg-neutral-700 text-white cursor-pointer flex items-center justify-center transition-colors shrink-0 hover:bg-neutral-700 dark:hover:bg-neutral-600"
             title="Send"
@@ -533,7 +586,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             </div>
           )}
         </div>
-        <div className="flex items-center pb-2 -mt-2 no-drag self-start">
+        <div className="flex items-center pb-2 -mt-2 no-drag self-start relative z-50">
           <div className="relative" ref={modelMenuRef}>
             <button
               className="h-7 px-2.5 border-none rounded-lg bg-transparent text-[11px] font-medium text-neutral-400 dark:text-neutral-500 cursor-pointer flex items-center gap-1 transition-colors hover:text-neutral-600 dark:hover:text-neutral-300 whitespace-nowrap"
@@ -543,7 +596,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
               <FiChevronDown size={11} />
             </button>
             {modelMenuOpen && (
-              <div className="absolute bottom-full left-0 mb-1 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-lg overflow-hidden z-50 min-w-[160px]">
+              <div className="absolute bottom-full left-0 mb-1 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-lg overflow-hidden z-50 min-w-[160px] no-drag">
                 {MODELS.map(m => (
                   <button
                     key={m.id}

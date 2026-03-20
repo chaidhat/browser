@@ -66,6 +66,7 @@ export interface HistoryEntry {
 export interface BrowserAPI {
   chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks, modelId?: string) => () => void;
   chatGenerateTitle: (userMessage: string) => Promise<string | null>;
+  chatSuggest: (messages: ChatMessage[], partialInput: string) => Promise<string | null>;
   getSettings: () => Promise<Settings>;
   saveSettings: (settings: Settings) => Promise<boolean>;
   loadTabs: () => Promise<unknown>;
@@ -83,6 +84,7 @@ export interface BrowserAPI {
   findInPage: (webContentsId: number, text: string, forward: boolean) => void;
   stopFindInPage: (webContentsId: number) => void;
   onFoundInPageResult: (callback: (activeMatch: number, totalMatches: number) => void) => void;
+  onShortcutFromWebview: (callback: (key: string) => void) => void;
 }
 
 contextBridge.exposeInMainWorld('browser', {
@@ -117,6 +119,7 @@ contextBridge.exposeInMainWorld('browser', {
     return cleanup;
   },
   chatGenerateTitle: (userMessage: string) => ipcRenderer.invoke('chat-generate-title', userMessage),
+  chatSuggest: (messages: ChatMessage[], partialInput: string) => ipcRenderer.invoke('chat-suggest', messages, partialInput),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings: Settings) => ipcRenderer.invoke('save-settings', settings),
   loadTabs: () => ipcRenderer.invoke('load-tabs'),
@@ -151,5 +154,8 @@ contextBridge.exposeInMainWorld('browser', {
     ipcRenderer.on('found-in-page-result', (_event, activeMatch: number, totalMatches: number) => {
       callback(activeMatch, totalMatches);
     });
+  },
+  onShortcutFromWebview: (callback: (key: string) => void) => {
+    ipcRenderer.on('shortcut-from-webview', (_event, key: string) => callback(key));
   },
 } satisfies BrowserAPI);

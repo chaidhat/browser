@@ -55,6 +55,14 @@ function createWindow(): void {
 
   mainWindow.loadFile(path.join(__dirname, '..', 'ui', 'index.html'));
 
+  // Intercept Cmd+T and Cmd+F from the main window itself (e.g., when focus is in a text input)
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.meta && (input.key === 't' || input.key === 'f') && input.type === 'keyDown') {
+      event.preventDefault();
+      mainWindow?.webContents.send('shortcut-from-webview', input.key);
+    }
+  });
+
   // Allow all permission requests from webviews (camera, mic, notifications, WebAuthn/passkeys, etc.)
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
     callback(true);
@@ -96,6 +104,14 @@ function createWindow(): void {
 
     // Enable pinch-to-zoom on webview content
     webContents.setVisualZoomLevelLimits(1, 5);
+
+    // Intercept Cmd+T and Cmd+F from webview so the app always handles them
+    webContents.on('before-input-event', (event, input) => {
+      if (input.meta && (input.key === 't' || input.key === 'f') && input.type === 'keyDown') {
+        event.preventDefault();
+        mainWindow?.webContents.send('shortcut-from-webview', input.key);
+      }
+    });
 
   });
 
@@ -407,6 +423,79 @@ ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMe
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     event.sender.send('chat-stream-error', requestId, `Request failed: ${message}`);
+  }
+});
+
+// Generate inline suggestion using a lightweight model
+ipcMain.handle('chat-suggest', async (_event, messages: ChatMessage[], partialInput: string) => {
+  const settings = loadSettings();
+
+  // Pick a lightweight model: OpenAI nano > Anthropic haiku > Google spark
+  let suggestModel;
+  if (settings.openaiKey) {
+    const openai = createOpenAI({ apiKey: settings.openaiKey });
+    suggestModel = openai.chat('gpt-5.4-nano');
+  } else if (settings.anthropicKey) {
+    const anthropic = createAnthropic({ apiKey: settings.anthropicKey });
+    suggestModel = anthropic('claude-haiku-4-5-20251001');
+  } else if (settings.googleKey) {
+    const google = createGoogleGenerativeAI({ apiKey: settings.googleKey });
+    suggestModel = google('gemini-2.0-flash-lite');
+  } else {
+    return null;
+  }
+
+  try {
+    const contextMessages = messages.slice(-10).map(m => {
+      const content = Array.isArray(m.content) ? m.content.filter(b => b.type === 'text').map(b => b.text).join(' ') : m.content;
+      return `${m.role}: ${content}`;
+    }).join('\n');
+
+    const isEmpty = !partialInput;
+
+    if (isEmpty) {
+      const system = `You are an autocomplete engine inside a chat input. Suggest a short, natural question or message the user might want to type next based on the conversation context. Output ONLY the suggested text. Keep it short (under 15 words). If there's no conversation yet, suggest an interesting question.`;
+      const prompt = contextMessages
+        ? `Conversation so far:\n${contextMessages}\n\nSuggest what the user might type next:`
+        : 'Suggest an interesting question the user might ask:';
+      const result = await generateText({
+        model: suggestModel,
+        system,
+        prompt,
+        maxOutputTokens: 60,
+      });
+      return result.text?.trim() || null;
+    }
+
+    // For partial input: ask the model to complete the full message, then strip the prefix
+    const system = `You are an autocomplete engine. The user is typing a message. Complete their message naturally. Output ONLY the full completed message (including what they already typed). Keep it short (under 20 words total). If you can't predict anything useful, repeat back exactly what they typed.`;
+    const prompt = contextMessages
+      ? `Conversation so far:\n${contextMessages}\n\nComplete this message: "${partialInput}"`
+      : `Complete this message: "${partialInput}"`;
+
+    const result = await generateText({
+      model: suggestModel,
+      system,
+      prompt,
+      maxOutputTokens: 60,
+    });
+    let full = result.text?.trim() || null;
+    if (!full) return null;
+    // Strip quotes if the model wrapped it
+    if (full.startsWith('"') && full.endsWith('"')) full = full.slice(1, -1);
+    // Find where the user's input appears and extract the continuation
+    const lowerFull = full.toLowerCase();
+    const lowerInput = partialInput.toLowerCase();
+    const idx = lowerFull.indexOf(lowerInput);
+    if (idx !== -1) {
+      const continuation = full.substring(idx + partialInput.length);
+      return continuation || null;
+    }
+    // Fallback: if model didn't include the prefix, add a space
+    if (!full.startsWith(' ')) full = ' ' + full;
+    return full;
+  } catch {
+    return null;
   }
 });
 

@@ -92,10 +92,10 @@ html, body, #root {
 .msg-assistant h4 {
   @apply mt-2.5 mb-1.5 font-semibold;
 }
-.msg-assistant h1 { @apply text-base; }
-.msg-assistant h2 { @apply text-[15px]; }
-.msg-assistant h3 { @apply text-sm; }
-.msg-assistant h4 { @apply text-[13px]; }
+.msg-assistant h1 { @apply text-2xl; }
+.msg-assistant h2 { @apply text-xl; }
+.msg-assistant h3 { @apply text-lg; }
+.msg-assistant h4 { @apply text-base; }
 .msg-assistant blockquote {
   @apply border-l-[3px] border-neutral-300 dark:border-neutral-600 pl-2.5 my-1.5 text-neutral-500 dark:text-neutral-400;
 }

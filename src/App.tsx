@@ -276,6 +276,15 @@ export default function App() {
           : dl
       ));
     });
+
+    // Forward Cmd+T/F intercepted from webview to our document keydown handler
+    window.browser.onShortcutFromWebview((key: string) => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key,
+        metaKey: true,
+        bubbles: true,
+      }));
+    });
   }, []);
 
   useEffect(() => {
@@ -516,7 +525,7 @@ export default function App() {
           onDismissAll={() => setDownloads([])}
         />
       </div>
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} activeUrl={activeTab?.url} />}
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} activeUrl={activeTab?.url} onClearHistory={() => { setVisitHistory([]); window.browser.saveHistory([]); }} />}
     </div>
   );
 }

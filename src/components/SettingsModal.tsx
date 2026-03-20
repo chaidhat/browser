@@ -3,9 +3,10 @@ import { useState, useEffect } from 'react';
 interface Props {
   onClose: () => void;
   activeUrl?: string;
+  onClearHistory?: () => void;
 }
 
-export function SettingsModal({ onClose, activeUrl }: Props) {
+export function SettingsModal({ onClose, activeUrl, onClearHistory }: Props) {
   const [apiKey, setApiKey] = useState('');
   const [anthropicKey, setAnthropicKey] = useState('');
   const [googleKey, setGoogleKey] = useState('');
@@ -29,8 +30,8 @@ export function SettingsModal({ onClose, activeUrl }: Props) {
 
   return (
     <>
-      <div className="fixed inset-0 bg-black/30 dark:bg-black/50 z-[200]" onClick={onClose} />
-      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-xl p-7 px-8 w-[420px] z-[201] shadow-[0_20px_60px_rgba(0,0,0,0.15)] dark:shadow-[0_20px_60px_rgba(0,0,0,0.4)]">
+      <div className="fixed inset-0 bg-black/30 dark:bg-black/50 z-[200] no-drag" onClick={onClose} />
+      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-xl p-7 px-8 w-[420px] z-[201] shadow-[0_20px_60px_rgba(0,0,0,0.15)] dark:shadow-[0_20px_60px_rgba(0,0,0,0.4)] no-drag">
         <h2 className="text-lg font-semibold mb-5 text-black dark:text-neutral-200">Settings</h2>
         <div className="mb-5">
           <label htmlFor="api-key-input" className="block text-[13px] font-medium mb-1.5 text-neutral-700 dark:text-neutral-300">
@@ -134,6 +135,21 @@ export function SettingsModal({ onClose, activeUrl }: Props) {
             );
           } catch { return null; }
         })()}
+        <div className="mb-5 pt-4 border-t border-neutral-200 dark:border-neutral-700">
+          <label className="block text-[13px] font-medium mb-1.5 text-neutral-700 dark:text-neutral-300">
+            Browsing History
+          </label>
+          <p className="text-[11px] text-neutral-400 dark:text-neutral-500 mb-2">Clear URL autocomplete history</p>
+          <button
+            className="h-[34px] px-4 border-none rounded-lg text-[13px] font-medium cursor-pointer transition-colors bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20"
+            onClick={() => {
+              onClearHistory?.();
+              onClose();
+            }}
+          >
+            Clear History
+          </button>
+        </div>
         <div className="flex justify-end gap-2">
           <button
             className="h-[34px] px-4 border-none rounded-lg text-[13px] font-medium cursor-pointer transition-colors bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-600"
