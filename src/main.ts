@@ -10,12 +10,21 @@ if (app.isPackaged) {
   app.setAsDefaultProtocolClient('https');
 }
 
+interface EmailAccount {
+  id: string;
+  label: string;
+  email: string;
+  imap: { host: string; port: number; security: 'tls' | 'starttls' | 'none'; username: string; password: string };
+  smtp: { host: string; port: number; security: 'tls' | 'starttls' | 'none'; username: string; password: string };
+}
+
 interface Settings {
   openaiKey: string;
   anthropicKey: string;
   googleKey: string;
   braveKey: string;
   serperKey: string;
+  emailAccounts: EmailAccount[];
 }
 
 const settingsPath = path.join(app.getPath('userData'), 'settings.json');
@@ -25,9 +34,9 @@ const historyPath = path.join(app.getPath('userData'), 'history.json');
 function loadSettings(): Settings {
   try {
     const data = fs.readFileSync(settingsPath, 'utf-8');
-    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', ...JSON.parse(data) };
+    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', emailAccounts: [], ...JSON.parse(data) };
   } catch {
-    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '' };
+    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', emailAccounts: [] };
   }
 }
 
@@ -172,6 +181,48 @@ ipcMain.handle('clear-site-data', async (_event, origin: string) => {
   return true;
 });
 
+// Test IMAP connection
+ipcMain.handle('test-imap', async (_event, account: EmailAccount) => {
+  const { ImapFlow } = require('imapflow');
+  const client = new ImapFlow({
+    host: account.imap.host,
+    port: account.imap.port,
+    secure: account.imap.security === 'tls',
+    auth: {
+      user: account.imap.username,
+      pass: account.imap.password,
+    },
+    logger: false,
+    tls: account.imap.security === 'starttls' ? { rejectUnauthorized: false } : undefined,
+  });
+
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock('INBOX');
+    try {
+      const messageCount = client.mailbox?.exists || 0;
+      const sample: { subject: string; from: string }[] = [];
+      if (messageCount > 0) {
+        const startSeq = Math.max(1, messageCount - 4);
+        for await (const msg of client.fetch(`${startSeq}:*`, { envelope: true })) {
+          sample.push({
+            subject: msg.envelope.subject || '(no subject)',
+            from: msg.envelope.from?.[0]?.address || 'unknown',
+          });
+        }
+      }
+      return { success: true, messageCount, sample };
+    } finally {
+      lock.release();
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, error: message };
+  } finally {
+    try { await client.logout(); } catch { /* ignore */ }
+  }
+});
+
 // Tabs persistence IPC
 ipcMain.handle('load-tabs', () => {
   try {
@@ -291,9 +342,10 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { z } from 'zod';
 
 interface ChatContentBlock {
-  type: 'text' | 'image_url';
+  type: 'text' | 'image_url' | 'file';
   text?: string;
   image_url?: { url: string; detail?: 'low' | 'high' | 'auto' };
+  file?: { url: string; mimeType: string };
 }
 
 interface ChatMessage {
@@ -305,19 +357,33 @@ function toSdkMessages(messages: ChatMessage[]) {
   return messages.map(m => {
     if (Array.isArray(m.content)) {
       const parts = m.content.map(block => {
+        if (block.type === 'file' && block.file) {
+          const url = block.file.url;
+          const dataMatch = url.match(/^data:([^;]+);base64,(.+)$/s);
+          if (dataMatch) {
+            return { type: 'file' as const, data: dataMatch[2], mediaType: dataMatch[1] };
+          }
+          if (url.startsWith('data:')) {
+            const commaIdx = url.indexOf(',');
+            if (commaIdx !== -1) {
+              return { type: 'file' as const, data: url.substring(commaIdx + 1), mediaType: block.file.mimeType };
+            }
+          }
+          return { type: 'file' as const, data: new URL(url), mediaType: block.file.mimeType };
+        }
         if (block.type === 'image_url' && block.image_url) {
           const url = block.image_url.url;
           // data: URIs need base64 extracted — SDK rejects data: scheme as URL
           const dataMatch = url.match(/^data:([^;]+);base64,(.+)$/s);
           if (dataMatch) {
-            return { type: 'image' as const, image: dataMatch[2], mimeType: dataMatch[1] };
+            return { type: 'image' as const, image: dataMatch[2], mediaType: dataMatch[1] };
           }
           // If it's still a data: URI that didn't match, try extracting after the comma
           if (url.startsWith('data:')) {
             const commaIdx = url.indexOf(',');
             if (commaIdx !== -1) {
               const mimeMatch = url.match(/^data:([^;,]+)/);
-              return { type: 'image' as const, image: url.substring(commaIdx + 1), mimeType: mimeMatch?.[1] || 'image/png' };
+              return { type: 'image' as const, image: url.substring(commaIdx + 1), mediaType: mimeMatch?.[1] || 'image/png' };
             }
           }
           return { type: 'image' as const, image: new URL(url) };
@@ -361,7 +427,7 @@ function buildTools(settings: Settings) {
   return tools;
 }
 
-function getModelForId(settings: Settings, modelId: string) {
+function getModelForId(settings: Settings, modelId: string, hasFiles = false) {
   switch (modelId) {
     case 'claude-opus-4-6': {
       if (!settings.anthropicKey) return { error: 'No Anthropic API key configured. Open Settings to add one.' };
@@ -380,27 +446,46 @@ function getModelForId(settings: Settings, modelId: string) {
     default: {
       if (!settings.openaiKey) return { error: 'No OpenAI API key configured. Open Settings to add one.' };
       const openai = createOpenAI({ apiKey: settings.openaiKey });
+      // Responses API doesn't support file uploads — fall back to Chat Completions
+      if (hasFiles) {
+        return { model: openai.chat('gpt-5.4'), isOpenAI: true, isChatCompletions: true };
+      }
       return { model: openai.responses('gpt-5.4'), isOpenAI: true };
     }
   }
 }
 
+const activeAbortControllers = new Map<string, AbortController>();
+
+ipcMain.on('chat-abort-stream', (_event, requestId: string) => {
+  const controller = activeAbortControllers.get(requestId);
+  if (controller) {
+    controller.abort();
+    activeAbortControllers.delete(requestId);
+  }
+});
+
 ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMessage[], modelId?: string) => {
   const settings = loadSettings();
-  const resolved = getModelForId(settings, modelId || 'gpt-5.4');
+  const hasFiles = messages.some(m => Array.isArray(m.content) && m.content.some(b => b.type === 'file'));
+  const resolved = getModelForId(settings, modelId || 'gpt-5.4', hasFiles);
   if ('error' in resolved) {
     event.sender.send('chat-stream-error', requestId, resolved.error);
     return;
   }
 
+  const abortController = new AbortController();
+  activeAbortControllers.set(requestId, abortController);
+
   try {
     const tools = buildTools(settings);
+    const isChatCompletions = 'isChatCompletions' in resolved && resolved.isChatCompletions;
     const result = streamText({
       model: resolved.model,
       messages: toSdkMessages(messages) as any,
-      tools,
-      stopWhen: stepCountIs(5),
-      ...(resolved.isOpenAI ? {
+      ...(!isChatCompletions ? { tools, stopWhen: stepCountIs(5) } : {}),
+      abortSignal: abortController.signal,
+      ...(resolved.isOpenAI && !isChatCompletions ? {
         providerOptions: {
           openai: {
             reasoningEffort: 'high',
@@ -419,8 +504,14 @@ ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMe
       }
     }
 
+    activeAbortControllers.delete(requestId);
     event.sender.send('chat-stream-done', requestId);
   } catch (err: unknown) {
+    activeAbortControllers.delete(requestId);
+    if (abortController.signal.aborted) {
+      event.sender.send('chat-stream-done', requestId);
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     event.sender.send('chat-stream-error', requestId, `Request failed: ${message}`);
   }

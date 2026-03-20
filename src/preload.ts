@@ -1,14 +1,23 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 export interface ChatContentBlock {
-  type: 'text' | 'image_url';
+  type: 'text' | 'image_url' | 'file';
   text?: string;
   image_url?: { url: string; detail?: 'low' | 'high' | 'auto' };
+  file?: { url: string; mimeType: string };
 }
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string | ChatContentBlock[];
+}
+
+export interface EmailAccount {
+  id: string;
+  label: string;
+  email: string;
+  imap: { host: string; port: number; security: 'tls' | 'starttls' | 'none'; username: string; password: string };
+  smtp: { host: string; port: number; security: 'tls' | 'starttls' | 'none'; username: string; password: string };
 }
 
 export interface Settings {
@@ -17,6 +26,7 @@ export interface Settings {
   googleKey: string;
   braveKey: string;
   serperKey: string;
+  emailAccounts: EmailAccount[];
 }
 
 export interface SerperResult {
@@ -65,6 +75,7 @@ export interface HistoryEntry {
 
 export interface BrowserAPI {
   chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks, modelId?: string) => () => void;
+  chatAbortStream: (requestId: string) => void;
   chatGenerateTitle: (userMessage: string) => Promise<string | null>;
   chatSuggest: (messages: ChatMessage[], partialInput: string) => Promise<string | null>;
   autocompleteSuggest: (query: string) => Promise<string | null>;
@@ -81,6 +92,7 @@ export interface BrowserAPI {
   showInFolder: (filePath: string) => void;
   serperSearch: (query: string) => Promise<SerperResult[] | null>;
   serperImageSearch: (query: string) => Promise<SerperImageResult[] | null>;
+  testImap: (account: EmailAccount) => Promise<{ success: boolean; messageCount?: number; sample?: { subject: string; from: string }[]; error?: string }>;
   clearSiteData: (origin: string) => Promise<boolean>;
   findInPage: (webContentsId: number, text: string, forward: boolean) => void;
   stopFindInPage: (webContentsId: number) => void;
@@ -119,6 +131,9 @@ contextBridge.exposeInMainWorld('browser', {
 
     return cleanup;
   },
+  chatAbortStream: (requestId: string) => {
+    ipcRenderer.send('chat-abort-stream', requestId);
+  },
   chatGenerateTitle: (userMessage: string) => ipcRenderer.invoke('chat-generate-title', userMessage),
   chatSuggest: (messages: ChatMessage[], partialInput: string) => ipcRenderer.invoke('chat-suggest', messages, partialInput),
   autocompleteSuggest: (query: string) => ipcRenderer.invoke('autocomplete-suggest', query),
@@ -145,6 +160,7 @@ contextBridge.exposeInMainWorld('browser', {
   },
   serperSearch: (query: string) => ipcRenderer.invoke('serper-search', query),
   serperImageSearch: (query: string) => ipcRenderer.invoke('serper-image-search', query),
+  testImap: (account: EmailAccount) => ipcRenderer.invoke('test-imap', account),
   clearSiteData: (origin: string) => ipcRenderer.invoke('clear-site-data', origin),
   findInPage: (webContentsId: number, text: string, forward: boolean) => {
     ipcRenderer.send('find-in-page', webContentsId, text, forward);

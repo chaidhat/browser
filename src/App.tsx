@@ -8,6 +8,50 @@ import { SettingsModal } from './components/SettingsModal';
 import { DownloadBar, DownloadItem } from './components/DownloadBar';
 import { FindBar } from './components/FindBar';
 
+function playNotificationTone() {
+  // Generate a WAV in memory: C5 for 0.5s then A5 for 0.5s
+  const sampleRate = 44100;
+  const totalSamples = sampleRate * 1;
+  const notes = [
+    { freq: 880, startSample: 0, endSample: sampleRate * 1.0 },
+  ];
+  const samples = new Float32Array(totalSamples);
+  for (const note of notes) {
+    for (let i = Math.floor(note.startSample); i < Math.floor(note.endSample); i++) {
+      const t = (i - note.startSample) / sampleRate;
+      const duration = (note.endSample - note.startSample) / sampleRate;
+      const envelope = Math.exp(-3 * t / duration); // fade out
+      samples[i] += 0.3 * envelope * Math.sin(2 * Math.PI * note.freq * t);
+    }
+  }
+  // Encode as 16-bit PCM WAV
+  const numSamples = samples.length;
+  const buffer = new ArrayBuffer(44 + numSamples * 2);
+  const view = new DataView(buffer);
+  const writeStr = (offset: number, str: string) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + numSamples * 2, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, numSamples * 2, true);
+  for (let i = 0; i < numSamples; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(44 + i * 2, s * 0x7FFF, true);
+  }
+  const blob = new Blob([buffer], { type: 'audio/wav' });
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  audio.play().finally(() => { setTimeout(() => URL.revokeObjectURL(url), 2000); });
+}
+
 interface TabState {
   tabs: TabInfo[];
   activeTabId: number;
@@ -231,9 +275,12 @@ export default function App() {
 
   const handleThinkingChange = useCallback((tabId: number, thinking: boolean) => {
     setThinkingTabs(prev => ({ ...prev, [tabId]: thinking }));
-    // When thinking stops (response done) and tab isn't active, mark unread
-    if (!thinking && tabId !== activeTabIdRef.current) {
-      setUnreadTabs(prev => ({ ...prev, [tabId]: true }));
+    if (!thinking) {
+      playNotificationTone();
+      // Mark unread if tab isn't active
+      if (tabId !== activeTabIdRef.current) {
+        setUnreadTabs(prev => ({ ...prev, [tabId]: true }));
+      }
     }
   }, []);
 

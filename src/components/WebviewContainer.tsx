@@ -88,6 +88,7 @@ export const WebviewContainer = forwardRef<WebviewContainerHandle, Props>(
           const wv = document.createElement('webview') as Electron.WebviewTag;
           wv.setAttribute('autosize', 'on');
           wv.setAttribute('allowpopups', '');
+          wv.setAttribute('webpreferences', 'enableBlinkFeatures=WebAuthentication');
           wv.setAttribute('useragent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
           wv.className = 'w-full h-full';
           wv.style.display = tab.id === activeTabId ? 'flex' : 'none';

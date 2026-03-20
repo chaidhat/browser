@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { FiChevronLeft, FiChevronRight, FiRefreshCw, FiMessageSquare, FiSettings } from 'react-icons/fi';
 import { resolveUrl, isUrl } from '../utils/navigate';
+import { rankedDomains } from '../utils/rankedDomains';
 
 interface TabInfo {
   id: number;
@@ -95,9 +96,50 @@ export function Toolbar({
       }
     }
 
+    // Ranked domains as fallback
+    for (const domain of rankedDomains) {
+      const url = `https://${domain}`;
+      if (seen.has(url)) continue;
+      if (domain.includes(q)) {
+        const score = domain.startsWith(q) ? 30 : 5;
+        results.push({ url, title: '', score });
+        seen.add(url);
+      }
+    }
+
     results.sort((a, b) => b.score - a.score);
     return results.slice(0, 8);
   }, [urlValue, activeUrl, allTabs, visitHistory]);
+
+  // Compute inline ghost completion — the top match whose domain starts with what user typed
+  const ghostCompletion = useMemo((): string | null => {
+    const q = urlValue.trim().toLowerCase();
+    if (!q || !isFocused) return null;
+
+    // Gather all candidate URLs from tabs + history, sorted by relevance
+    const candidates: { url: string; score: number }[] = [];
+    for (const tab of allTabs) {
+      if (tab.url && tab.type !== 'chat') candidates.push({ url: tab.url, score: 50 });
+    }
+    for (const entry of visitHistory) {
+      candidates.push({ url: entry.url, score: 40 + Math.min(entry.visitCount, 10) });
+    }
+
+    for (const c of candidates.sort((a, b) => b.score - a.score)) {
+      // Strip protocol and www, check if domain starts with query
+      const stripped = c.url.replace(/^https?:\/\/(www\.)?/, '');
+      if (stripped.toLowerCase().startsWith(q)) {
+        return stripped;
+      }
+    }
+    // Fallback to ranked domains
+    for (const domain of rankedDomains) {
+      if (domain.startsWith(q)) {
+        return domain;
+      }
+    }
+    return null;
+  }, [urlValue, isFocused, allTabs, visitHistory]);
 
   useEffect(() => {
     setShowDropdown(suggestions.length > 0);
@@ -123,16 +165,30 @@ export function Toolbar({
         setSelectedIndex(i => (i - 1 + suggestions.length) % suggestions.length);
         return;
       }
-      if (e.key === 'Tab' && selectedIndex >= 0) {
-        e.preventDefault();
-        setUrlValue(suggestions[selectedIndex].url);
-        setShowDropdown(false);
-        return;
+      if (e.key === 'Tab') {
+        if (selectedIndex >= 0) {
+          e.preventDefault();
+          setUrlValue(suggestions[selectedIndex].url);
+          setShowDropdown(false);
+          return;
+        }
+        if (ghostCompletion) {
+          e.preventDefault();
+          setUrlValue(ghostCompletion);
+          return;
+        }
       }
       if (e.key === 'Escape') {
         setShowDropdown(false);
         return;
       }
+    }
+
+    // Tab to accept ghost completion even when dropdown isn't showing
+    if (e.key === 'Tab' && ghostCompletion) {
+      e.preventDefault();
+      setUrlValue(ghostCompletion);
+      return;
     }
 
     if (e.key === 'Enter') {
@@ -147,6 +203,9 @@ export function Toolbar({
       inputRef.current?.blur();
       if (e.metaKey) {
         onNavigate(`https://www.google.com/search?q=${encodeURIComponent(value)}`);
+      } else if (ghostCompletion) {
+        // Ghost completion matched — navigate to it
+        onNavigate(resolveUrl(ghostCompletion));
       } else if (isUrl(value)) {
         onNavigate(resolveUrl(value));
       } else {
@@ -182,6 +241,13 @@ export function Toolbar({
           onFocus={() => { setIsFocused(true); inputRef.current?.select(); }}
           onBlur={() => { setIsFocused(false); setTimeout(() => setShowDropdown(false), 150); }}
         />
+        {/* Inline ghost completion */}
+        {isFocused && ghostCompletion && (
+          <div className="absolute inset-0 flex items-center px-3.5 text-[13px] pointer-events-none truncate">
+            <span className="invisible">{urlValue}</span>
+            <span className="text-neutral-400 dark:text-neutral-500">{ghostCompletion.slice(urlValue.trim().length)}</span>
+          </div>
+        )}
         {!isFocused && urlValue && (() => {
           const parts = splitUrl(urlValue);
           if (parts) {
