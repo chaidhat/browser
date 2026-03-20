@@ -499,6 +499,28 @@ ipcMain.handle('chat-suggest', async (_event, messages: ChatMessage[], partialIn
   }
 });
 
+// Google Autocomplete suggestions (no API key needed)
+ipcMain.handle('autocomplete-suggest', async (_event, query: string) => {
+  if (!query) return null;
+  try {
+    const res = await fetch(`https://suggestqueries.google.com/complete/search?client=firefox&q=${encodeURIComponent(query)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const suggestions: string[] = data[1];
+    if (!suggestions || suggestions.length === 0) return null;
+    // Find the first suggestion that starts with what the user typed
+    const lowerQuery = query.toLowerCase();
+    for (const s of suggestions) {
+      if (s.toLowerCase().startsWith(lowerQuery) && s.length > query.length) {
+        return s.substring(query.length);
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+});
+
 // Generate chat title using a lightweight model
 ipcMain.handle('chat-generate-title', async (_event, userMessage: string) => {
   const apiKey = loadSettings().openaiKey;

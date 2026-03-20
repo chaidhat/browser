@@ -67,6 +67,7 @@ export interface BrowserAPI {
   chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks, modelId?: string) => () => void;
   chatGenerateTitle: (userMessage: string) => Promise<string | null>;
   chatSuggest: (messages: ChatMessage[], partialInput: string) => Promise<string | null>;
+  autocompleteSuggest: (query: string) => Promise<string | null>;
   getSettings: () => Promise<Settings>;
   saveSettings: (settings: Settings) => Promise<boolean>;
   loadTabs: () => Promise<unknown>;
@@ -120,6 +121,7 @@ contextBridge.exposeInMainWorld('browser', {
   },
   chatGenerateTitle: (userMessage: string) => ipcRenderer.invoke('chat-generate-title', userMessage),
   chatSuggest: (messages: ChatMessage[], partialInput: string) => ipcRenderer.invoke('chat-suggest', messages, partialInput),
+  autocompleteSuggest: (query: string) => ipcRenderer.invoke('autocomplete-suggest', query),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings: Settings) => ipcRenderer.invoke('save-settings', settings),
   loadTabs: () => ipcRenderer.invoke('load-tabs'),

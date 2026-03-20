@@ -106,28 +106,40 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     setAcIndex(-1);
   }, [acSuggestions]);
 
-  // Debounced inline suggestion from gpt-5.4-nano
+  // Debounced inline suggestion: Algolia when empty chat, AI when in conversation
+  const isEmpty = messages.length === 0 && !isTyping;
   useEffect(() => {
     if (suggestTimerRef.current) clearTimeout(suggestTimerRef.current);
     if (isTyping) { setGhostSuggestion(null); return; }
     const trimmed = inputValue.trim();
-    // Allow empty input (suggest a question) or 3+ chars
     if (trimmed.length > 0 && trimmed.length < 3) { setGhostSuggestion(null); return; }
+    // Empty chat: only Algolia (needs input)
+    if (isEmpty && !trimmed) { setGhostSuggestion(null); return; }
     const reqId = ++ghostRequestRef.current;
     suggestTimerRef.current = setTimeout(async () => {
-      const apiMessages = messages.filter(m => m.role !== 'error').map(m => ({
-        role: m.role as 'user' | 'assistant' | 'system',
-        content: m.content,
-      }));
-      const suggestion = await window.browser.chatSuggest(apiMessages, trimmed);
-      if (ghostRequestRef.current === reqId && suggestion) {
-        setGhostSuggestion(suggestion);
-      } else if (ghostRequestRef.current === reqId) {
-        setGhostSuggestion(null);
+      if (isEmpty) {
+        // Algolia only for empty chat state
+        if (trimmed) {
+          const algoliaSuggestion = await window.browser.autocompleteSuggest(trimmed);
+          if (ghostRequestRef.current !== reqId) return;
+          setGhostSuggestion(algoliaSuggestion);
+        }
+      } else {
+        // AI autocomplete when in conversation
+        const apiMessages = messages.filter(m => m.role !== 'error').map(m => ({
+          role: m.role as 'user' | 'assistant' | 'system',
+          content: m.content,
+        }));
+        const suggestion = await window.browser.chatSuggest(apiMessages, trimmed);
+        if (ghostRequestRef.current === reqId && suggestion) {
+          setGhostSuggestion(suggestion);
+        } else if (ghostRequestRef.current === reqId) {
+          setGhostSuggestion(null);
+        }
       }
     }, trimmed ? 300 : 500);
     return () => { if (suggestTimerRef.current) clearTimeout(suggestTimerRef.current); };
-  }, [inputValue, messages, isTyping]);
+  }, [inputValue, messages, isTyping, isEmpty]);
 
   const hasStreamingContent = streamingContent.length > 0;
   useEffect(() => {
@@ -374,7 +386,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     setGhostSuggestion(null);
     const textarea = e.target;
     textarea.style.height = 'auto';
-    textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+    textarea.style.height = Math.max(40, Math.min(textarea.scrollHeight, 120)) + 'px';
   };
 
   const handlePaste = useCallback(async (e: React.ClipboardEvent) => {
@@ -414,8 +426,6 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     }
   }, [onOpenLink]);
 
-  const isEmpty = messages.length === 0 && !isTyping;
-
   return (
     <div
       className="flex-1 flex flex-col h-full bg-white dark:bg-black overflow-hidden"
@@ -426,11 +436,11 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
       <div className="h-6 shrink-0 drag" />
       <div className={isEmpty ? 'hidden' : 'flex-1 relative overflow-hidden'}>
       <div className="absolute inset-0 overflow-y-auto w-full scrollbar-thin" data-chat-messages={tabId} ref={messagesRef} onScroll={handleScroll} onClick={handleLinkClick}>
-        <div className="max-w-[768px] mx-auto p-6 pb-32 flex flex-col gap-3 min-h-full">
+        <div className="max-w-[768px] mx-auto pl-6 pr-0 pt-6 pb-32 flex flex-col gap-3 min-h-full">
           {messages.map((msg, i) => {
             if (msg.role === 'error') {
               return (
-                <div key={i} className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] break-words whitespace-pre-wrap bg-red-500/10 text-red-600 dark:text-red-400 self-start border border-red-500/20" style={{ fontFamily: "'Noto Serif', serif" }}>
+                <div key={i} className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] break-words whitespace-pre-wrap bg-red-500/10 text-red-600 dark:text-red-400 self-start border border-red-500/20" style={{ fontFamily: "'PT Serif', serif" }}>
                   {msg.content}
                 </div>
               );
@@ -440,21 +450,21 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
                 <div
                   key={i}
                   className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-[15px] leading-relaxed max-w-[90%] break-words text-black dark:text-neutral-200 self-start"
-                  style={{ fontFamily: "'Noto Serif', serif" }}
+                  style={{ fontFamily: "'PT Serif', serif" }}
                   dangerouslySetInnerHTML={{ __html: renderContent(msg.content) }}
                 />
               );
             }
             return (
               <div key={i} className="flex flex-col gap-2 self-end max-w-[90%]">
-                <div className="p-2.5 px-3.5 rounded-xl rounded-br-sm text-[15px] leading-relaxed break-words whitespace-pre-wrap bg-neutral-100 dark:bg-neutral-900 dark:text-neutral-200" style={{ fontFamily: "'Noto Serif', serif" }}>
+                <div className="p-2.5 px-3.5 rounded-xl rounded-br-sm text-[15px] leading-relaxed break-words whitespace-pre-wrap bg-neutral-100 dark:bg-neutral-900 dark:text-neutral-200" style={{ fontFamily: "'PT Serif', serif" }}>
                   {msg.images && msg.images.map((img, j) => (
                     <img key={j} src={img} className="block max-w-full max-h-[300px] rounded-lg mb-1.5 object-contain cursor-pointer hover:opacity-80 transition-opacity" onClick={() => setLightboxImage(img)} />
                   ))}
                   {msg.content}
                 </div>
                 {i === 0 && msg.searchResults && (msg.searchResults.results.length > 0 || (msg.searchResults.images && msg.searchResults.images.length > 0)) && (
-                  <div className="self-start w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 overflow-hidden">
+                  <div className="self-start w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 overflow-hidden" style={{ fontFamily: "'PT Serif', serif" }}>
                     <div className="px-3 py-1.5 text-[11px] font-medium text-neutral-500 dark:text-neutral-400 border-b border-neutral-200 dark:border-neutral-700">
                       Search results
                     </div>
@@ -488,8 +498,8 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
                         href={r.link}
                         className="flex flex-col gap-0.5 px-3 py-2 hover:bg-neutral-100 dark:hover:bg-neutral-700/50 transition-colors cursor-pointer border-b border-neutral-100 dark:border-neutral-700/50 last:border-b-0 no-underline"
                       >
-                        <span className="text-[12px] font-medium text-blue-600 dark:text-blue-400 truncate">{r.title}</span>
-                        <span className="text-[11px] text-neutral-500 dark:text-neutral-400 line-clamp-1">{r.snippet}</span>
+                        <span className="text-[15px] font-medium text-blue-600 dark:text-blue-400 truncate" style={{ fontFamily: "'PT Serif', serif" }}>{r.title}</span>
+                        <span className="text-[13px] text-neutral-500 dark:text-neutral-400 line-clamp-1" style={{ fontFamily: "'PT Serif', serif" }}>{r.snippet}</span>
                       </a>
                     ))}
                   </div>
@@ -501,11 +511,11 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             streamingContent ? (
               <div
                 className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-[15px] leading-relaxed max-w-[90%] break-words text-black dark:text-neutral-200 self-start"
-                style={{ fontFamily: "'Noto Serif', serif" }}
+                style={{ fontFamily: "'PT Serif', serif" }}
                 dangerouslySetInnerHTML={{ __html: renderContent(streamingContent) }}
               />
             ) : (
-              <div className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] self-start bg-transparent text-neutral-400" style={{ fontFamily: "'Noto Serif', serif" }}>
+              <div className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] self-start bg-transparent text-neutral-400" style={{ fontFamily: "'PT Serif', serif" }}>
                 <span className="inline-block bg-gradient-to-r from-neutral-300 via-neutral-500 to-neutral-300 dark:from-neutral-600 dark:via-neutral-300 dark:to-neutral-600 bg-[length:200%_100%] bg-clip-text [-webkit-background-clip:text] [-webkit-text-fill-color:transparent] animate-shimmer">
                   Thinking... {thinkingSeconds > 0 ? `${thinkingSeconds >= 60 ? `${Math.floor(thinkingSeconds / 60)}m ${Math.floor(thinkingSeconds % 60)}s` : `${Math.floor(thinkingSeconds)}s`}` : ''}
                 </span>
@@ -515,7 +525,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
         </div>
       </div>
       </div>
-      <div className={`w-full mx-auto relative ${isEmpty ? 'flex-1 flex flex-col items-center justify-center drag max-w-[640px]' : 'max-w-[768px] px-8 overflow-visible'}`}>
+      <div className={`w-full mx-auto relative ${isEmpty ? 'flex-1 flex flex-col items-center justify-center drag max-w-[640px]' : 'max-w-[768px] pl-8 pr-0 overflow-visible'}`}>
         {isEmpty && (
           <>
             <img src={logoLight} alt="Logo" className="h-20 mb-6 dark:hidden" />
@@ -537,11 +547,12 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             ))}
           </div>
         )}
-        <div className="relative flex items-end gap-2.5 pb-3 no-drag w-full">
+        <div className="flex items-start gap-2.5 pb-0 pr-0 no-drag w-full">
           <div className="relative flex-1">
             <textarea
               ref={inputRef}
-              className="h-10 w-full resize-none border border-neutral-200 dark:border-neutral-700 rounded-[10px] bg-white dark:bg-neutral-900 text-black dark:text-neutral-200 text-sm font-[inherit] p-2.5 px-3.5 outline-none max-h-[120px] transition-colors placeholder:text-neutral-400 dark:placeholder:text-neutral-600"
+              className="h-10 w-full resize-none border border-neutral-200 dark:border-neutral-700 rounded-[10px] bg-white dark:bg-neutral-900 text-black dark:text-neutral-200 text-[15px] py-2 px-3.5 outline-none max-h-[120px] transition-colors placeholder:text-neutral-400 dark:placeholder:text-neutral-600 box-border"
+              style={{ fontFamily: "'PT Serif', serif" }}
               placeholder={ghostSuggestion && !inputValue ? '' : 'Ask anything...'}
               rows={1}
               value={inputValue}
@@ -551,10 +562,31 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             />
             {ghostSuggestion && (
               <div
-                className="absolute inset-0 pointer-events-none border border-transparent rounded-[10px] p-2.5 px-3.5 text-sm font-[inherit] overflow-hidden whitespace-nowrap text-ellipsis h-10"
+                className="absolute inset-0 pointer-events-none border border-transparent rounded-[10px] py-2 px-3.5 text-[15px] overflow-hidden whitespace-nowrap text-ellipsis h-10 box-border"
+                style={{ fontFamily: "'PT Serif', serif" }}
               >
                 {inputValue && <span className="invisible whitespace-pre">{inputValue}</span>}
                 <span className="text-neutral-400 dark:text-neutral-600">{ghostSuggestion}</span>
+              </div>
+            )}
+            {showAc && (
+              <div className="absolute top-full left-0 right-0 z-50 mt-1">
+                <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-lg overflow-hidden">
+                  {acSuggestions.map((s, i) => (
+                    <div
+                      key={s.url}
+                      className={`px-3 py-1.5 text-[13px] cursor-pointer flex items-center gap-2 truncate ${
+                        i === acIndex
+                          ? 'bg-blue-500 text-white'
+                          : 'text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700'
+                      }`}
+                      onMouseDown={(e) => { e.preventDefault(); acceptAcSuggestion(s); }}
+                    >
+                      <span className="truncate font-medium">{s.title || s.url}</span>
+                      {s.title && <span className={`truncate text-[11px] ${i === acIndex ? 'text-white/70' : 'text-neutral-400 dark:text-neutral-500'}`}>{s.url}</span>}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -565,28 +597,8 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
           >
             {isEmpty ? <FiArrowRight size={18} /> : <FiArrowUp size={18} />}
           </button>
-          {showAc && (
-            <div className="absolute top-full left-0 right-0 z-50 mt-1">
-              <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-lg overflow-hidden">
-                {acSuggestions.map((s, i) => (
-                  <div
-                    key={s.url}
-                    className={`px-3 py-1.5 text-[13px] cursor-pointer flex items-center gap-2 truncate ${
-                      i === acIndex
-                        ? 'bg-blue-500 text-white'
-                        : 'text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700'
-                    }`}
-                    onMouseDown={(e) => { e.preventDefault(); acceptAcSuggestion(s); }}
-                  >
-                    <span className="truncate font-medium">{s.title || s.url}</span>
-                    {s.title && <span className={`truncate text-[11px] ${i === acIndex ? 'text-white/70' : 'text-neutral-400 dark:text-neutral-500'}`}>{s.url}</span>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
-        <div className="flex items-center pb-2 -mt-2 no-drag self-start relative z-50">
+        <div className="flex items-center pb-4 no-drag self-start relative z-10">
           <div className="relative" ref={modelMenuRef}>
             <button
               className="h-7 px-2.5 border-none rounded-lg bg-transparent text-[11px] font-medium text-neutral-400 dark:text-neutral-500 cursor-pointer flex items-center gap-1 transition-colors hover:text-neutral-600 dark:hover:text-neutral-300 whitespace-nowrap"

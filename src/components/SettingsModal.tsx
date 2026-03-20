@@ -31,8 +31,9 @@ export function SettingsModal({ onClose, activeUrl, onClearHistory }: Props) {
   return (
     <>
       <div className="fixed inset-0 bg-black/30 dark:bg-black/50 z-[200] no-drag" onClick={onClose} />
-      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-xl p-7 px-8 w-[420px] z-[201] shadow-[0_20px_60px_rgba(0,0,0,0.15)] dark:shadow-[0_20px_60px_rgba(0,0,0,0.4)] no-drag">
-        <h2 className="text-lg font-semibold mb-5 text-black dark:text-neutral-200">Settings</h2>
+      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-xl w-[420px] max-h-[50vh] z-[201] shadow-[0_20px_60px_rgba(0,0,0,0.15)] dark:shadow-[0_20px_60px_rgba(0,0,0,0.4)] no-drag flex flex-col overflow-hidden">
+        <h2 className="text-lg font-semibold p-7 px-8 pb-0 mb-5 text-black dark:text-neutral-200 shrink-0">Settings</h2>
+        <div className="flex-1 overflow-y-auto px-8 scrollbar-thin">
         <div className="mb-5">
           <label htmlFor="api-key-input" className="block text-[13px] font-medium mb-1.5 text-neutral-700 dark:text-neutral-300">
             OpenAI API Key
@@ -150,7 +151,8 @@ export function SettingsModal({ onClose, activeUrl, onClearHistory }: Props) {
             Clear History
           </button>
         </div>
-        <div className="flex justify-end gap-2">
+        </div>
+        <div className="flex justify-end gap-2 p-7 px-8 pt-4 shrink-0 border-t border-neutral-200 dark:border-neutral-700">
           <button
             className="h-[34px] px-4 border-none rounded-lg text-[13px] font-medium cursor-pointer transition-colors bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-600"
             onClick={onClose}

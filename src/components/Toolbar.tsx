@@ -39,6 +39,12 @@ interface Props {
 
 const btnClass = "w-8 h-8 border-none rounded-md bg-transparent text-neutral-500 dark:text-neutral-400 cursor-pointer flex items-center justify-center transition-colors hover:bg-black/6 dark:hover:bg-white/6 hover:text-black dark:hover:text-neutral-200 active:bg-black/10 dark:active:bg-white/12";
 
+function splitUrl(url: string): { before: string; domain: string; after: string } | null {
+  const match = url.match(/^(https?:\/\/)((?:[a-z0-9-]+\.)*[a-z0-9-]+\.[a-z]{2,})(\/.*)?$/i);
+  if (!match) return null;
+  return { before: match[1], domain: match[2], after: match[3] || '' };
+}
+
 export function Toolbar({
   activeUrl, loading, sidebarOpen,
   onNavigate, onSearch, onBack, onForward, onReload,
@@ -48,6 +54,7 @@ export function Toolbar({
   const [urlValue, setUrlValue] = useState(activeUrl);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -165,16 +172,33 @@ export function Toolbar({
         <input
           ref={inputRef}
           type="text"
-          className={`w-full h-8 px-3.5 border-none rounded-lg bg-neutral-100 dark:bg-neutral-900 text-black dark:text-neutral-200 text-[13px] outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500 ${loading ? 'bg-[length:200%_100%] animate-loading bg-gradient-to-r from-white via-neutral-100 to-white dark:from-neutral-700 dark:via-neutral-600 dark:to-neutral-700' : ''}`}
+          className={`w-full h-8 px-3.5 border-none rounded-lg bg-neutral-100 dark:bg-neutral-900 text-[13px] outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500 ${isFocused ? 'text-black dark:text-neutral-200' : 'text-transparent'} ${loading ? 'bg-[length:200%_100%] animate-loading bg-gradient-to-r from-white via-neutral-100 to-white dark:from-neutral-700 dark:via-neutral-600 dark:to-neutral-700' : ''}`}
           placeholder="Search or enter URL"
           spellCheck={false}
           autoComplete="off"
           value={urlValue}
           onChange={(e) => setUrlValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          onFocus={() => inputRef.current?.select()}
-          onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
+          onFocus={() => { setIsFocused(true); inputRef.current?.select(); }}
+          onBlur={() => { setIsFocused(false); setTimeout(() => setShowDropdown(false), 150); }}
         />
+        {!isFocused && urlValue && (() => {
+          const parts = splitUrl(urlValue);
+          if (parts) {
+            return (
+              <div className="absolute inset-0 flex items-center px-3.5 text-[13px] pointer-events-none truncate">
+                <span className="text-neutral-400 dark:text-neutral-500">{parts.before}</span>
+                <span className="text-black dark:text-neutral-200">{parts.domain}</span>
+                <span className="text-neutral-400 dark:text-neutral-500">{parts.after}</span>
+              </div>
+            );
+          }
+          return (
+            <div className="absolute inset-0 flex items-center px-3.5 text-[13px] pointer-events-none truncate text-black dark:text-neutral-200">
+              {urlValue}
+            </div>
+          );
+        })()}
         {showDropdown && (
           <div className="absolute top-full left-0 right-0 z-50 mt-1 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-lg overflow-hidden">
             {suggestions.map((s, i) => (
