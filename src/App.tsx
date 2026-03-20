@@ -191,7 +191,7 @@ export default function App() {
 
   const handleTabUpdate = useCallback((id: number, updates: { title?: string; url?: string }) => {
     dispatch({ type: 'UPDATE_TAB', id, ...updates });
-    if (updates.url && updates.url !== 'about:blank') {
+    if (updates.url && updates.url !== 'about:blank' && !updates.url.startsWith('data:')) {
       setVisitHistory(prev => {
         const existing = prev.find(h => h.url === updates.url);
         if (existing) {
@@ -452,23 +452,26 @@ export default function App() {
         onClose={handleCloseTab}
         onCreate={() => dispatch({ type: 'CREATE_TAB' })}
         onReorder={(tabs) => dispatch({ type: 'REORDER_TABS', tabs })}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <div className="flex-1 flex flex-col min-w-0 h-full bg-white dark:bg-neutral-900">
-        <Toolbar
-          activeUrl={activeTab?.url || ''}
-          loading={activeTab ? !!loadingTabs[activeTab.id] : false}
-          sidebarOpen={sidebarOpen}
-          onNavigate={handleNavigate}
-          onSearch={handleSearch}
-          onBack={() => webviewRef.current?.goBack()}
-          onForward={() => webviewRef.current?.goForward()}
-          onReload={() => webviewRef.current?.reload()}
-          onToggleChat={() => setSidebarOpen(prev => !prev)}
-          onOpenSettings={() => setSettingsOpen(true)}
-          isChatTab={isChat}
-          allTabs={tabState.tabs}
-          visitHistory={visitHistory}
-        />
+        {!isChat && (
+          <Toolbar
+            activeUrl={activeTab?.url || ''}
+            loading={activeTab ? !!loadingTabs[activeTab.id] : false}
+            sidebarOpen={sidebarOpen}
+            onNavigate={handleNavigate}
+            onSearch={handleSearch}
+            onBack={() => webviewRef.current?.goBack()}
+            onForward={() => webviewRef.current?.goForward()}
+            onReload={() => webviewRef.current?.reload()}
+            onToggleChat={() => setSidebarOpen(prev => !prev)}
+            onOpenSettings={() => setSettingsOpen(true)}
+            isChatTab={isChat}
+            allTabs={tabState.tabs}
+            visitHistory={visitHistory}
+          />
+        )}
         <div className="flex flex-1 min-h-0 relative">
           {findOpen && (
             <FindBar
@@ -513,7 +516,7 @@ export default function App() {
           onDismissAll={() => setDownloads([])}
         />
       </div>
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} activeUrl={activeTab?.url} />}
     </div>
   );
 }

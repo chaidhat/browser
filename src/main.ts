@@ -5,8 +5,10 @@ import fs from 'fs';
 app.name = 'Pause';
 nativeTheme.themeSource = 'system';
 
-app.setAsDefaultProtocolClient('http');
-app.setAsDefaultProtocolClient('https');
+if (app.isPackaged) {
+  app.setAsDefaultProtocolClient('http');
+  app.setAsDefaultProtocolClient('https');
+}
 
 interface Settings {
   openaiKey: string;
@@ -147,6 +149,13 @@ ipcMain.handle('save-settings', (_event, settings: Settings) => {
   return true;
 });
 
+ipcMain.handle('clear-site-data', async (_event, origin: string) => {
+  const ses = session.defaultSession;
+  await ses.clearStorageData({ origin, storages: ['cookies', 'localstorage', 'indexdb', 'websql', 'serviceworkers', 'cachestorage'] });
+  await ses.clearCache();
+  return true;
+});
+
 // Tabs persistence IPC
 ipcMain.handle('load-tabs', () => {
   try {
@@ -227,6 +236,31 @@ ipcMain.handle('serper-search', async (_event, query: string) => {
       snippet: r.snippet,
     }));
     return results;
+  } catch {
+    return null;
+  }
+});
+
+// Serper Image Search IPC
+ipcMain.handle('serper-image-search', async (_event, query: string) => {
+  const settings = loadSettings();
+  if (!settings.serperKey) return null;
+  try {
+    const res = await fetch('https://google.serper.dev/images', {
+      method: 'POST',
+      headers: {
+        'X-API-KEY': settings.serperKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ q: query, num: 8 }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data.images || []).slice(0, 8).map((r: any) => ({
+      title: r.title,
+      imageUrl: r.imageUrl,
+      link: r.link,
+    }));
   } catch {
     return null;
   }

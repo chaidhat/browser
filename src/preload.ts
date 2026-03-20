@@ -25,6 +25,12 @@ export interface SerperResult {
   snippet: string;
 }
 
+export interface SerperImageResult {
+  title: string;
+  imageUrl: string;
+  link: string;
+}
+
 export interface ChatStreamCallbacks {
   onChunk: (chunk: string) => void;
   onDone: () => void;
@@ -72,6 +78,8 @@ export interface BrowserAPI {
   onDownloadDone: (callback: (event: DownloadDoneEvent) => void) => void;
   showInFolder: (filePath: string) => void;
   serperSearch: (query: string) => Promise<SerperResult[] | null>;
+  serperImageSearch: (query: string) => Promise<SerperImageResult[] | null>;
+  clearSiteData: (origin: string) => Promise<boolean>;
   findInPage: (webContentsId: number, text: string, forward: boolean) => void;
   stopFindInPage: (webContentsId: number) => void;
   onFoundInPageResult: (callback: (activeMatch: number, totalMatches: number) => void) => void;
@@ -131,6 +139,8 @@ contextBridge.exposeInMainWorld('browser', {
     ipcRenderer.send('show-in-folder', filePath);
   },
   serperSearch: (query: string) => ipcRenderer.invoke('serper-search', query),
+  serperImageSearch: (query: string) => ipcRenderer.invoke('serper-image-search', query),
+  clearSiteData: (origin: string) => ipcRenderer.invoke('clear-site-data', origin),
   findInPage: (webContentsId: number, text: string, forward: boolean) => {
     ipcRenderer.send('find-in-page', webContentsId, text, forward);
   },

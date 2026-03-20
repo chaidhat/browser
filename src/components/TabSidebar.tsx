@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { FiX, FiPlus } from 'react-icons/fi';
+import { FiX, FiPlus, FiSettings } from 'react-icons/fi';
 import type { TabInfo } from './WebviewContainer';
 
 interface Props {
@@ -13,6 +13,7 @@ interface Props {
   onClose: (id: number) => void;
   onCreate: () => void;
   onReorder: (tabs: TabInfo[]) => void;
+  onOpenSettings: () => void;
 }
 
 function Spinner() {
@@ -24,7 +25,7 @@ function Spinner() {
   );
 }
 
-export function TabSidebar({ tabs, activeTabId, loadingTabs, favicons, thinkingTabs, unreadTabs, onSwitch, onClose, onCreate, onReorder }: Props) {
+export function TabSidebar({ tabs, activeTabId, loadingTabs, favicons, thinkingTabs, unreadTabs, onSwitch, onClose, onCreate, onReorder, onOpenSettings }: Props) {
   const [dragId, setDragId] = useState<number | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: number; position: 'before' | 'after' } | null>(null);
   const dragNodeRef = useRef<HTMLDivElement | null>(null);
@@ -118,7 +119,7 @@ export function TabSidebar({ tabs, activeTabId, loadingTabs, favicons, thinkingT
                 ) : (
                   <div className="w-3.5 h-3.5 shrink-0 rounded-sm bg-neutral-300 dark:bg-neutral-600" />
                 )}
-                <span className={`overflow-hidden text-ellipsis whitespace-nowrap flex-1 min-w-0 text-xs leading-none ${isThinking ? 'bg-gradient-to-r from-neutral-400 via-black to-neutral-400 dark:from-neutral-500 dark:via-white dark:to-neutral-500 bg-[length:200%_100%] bg-clip-text [-webkit-background-clip:text] [-webkit-text-fill-color:transparent] animate-shimmer' : ''}`}>
+                <span className={`overflow-hidden text-ellipsis whitespace-nowrap flex-1 min-w-0 text-xs leading-none ${isThinking ? 'bg-gradient-to-r from-neutral-300 via-neutral-500 to-neutral-300 dark:from-neutral-600 dark:via-neutral-300 dark:to-neutral-600 bg-[length:200%_100%] bg-clip-text [-webkit-background-clip:text] [-webkit-text-fill-color:transparent] animate-shimmer' : ''}`}>
                   {tab.title}
                 </span>
                 <button
@@ -147,6 +148,14 @@ export function TabSidebar({ tabs, activeTabId, loadingTabs, favicons, thinkingT
           <span>Add Tab</span>
         </button>
       </div>
+      <button
+        className="w-full h-[30px] border-none rounded-md bg-transparent text-neutral-500 dark:text-neutral-400 cursor-pointer flex items-center px-2.5 gap-1.5 shrink-0 no-drag transition-colors hover:bg-black/8 dark:hover:bg-white/8 hover:text-black dark:hover:text-neutral-200 text-xs select-none mb-1"
+        title="Settings"
+        onClick={onOpenSettings}
+      >
+        <FiSettings size={13} />
+        <span>Settings</span>
+      </button>
     </div>
   );
 }

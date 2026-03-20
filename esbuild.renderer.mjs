@@ -13,6 +13,7 @@ await build({
   format: 'iife',
   sourcemap: true,
   jsx: 'automatic',
+  loader: { '.png': 'dataurl' },
   define: {
     'process.env.NODE_ENV': '"production"',
   },

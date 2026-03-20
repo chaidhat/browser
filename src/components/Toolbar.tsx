@@ -204,9 +204,6 @@ export function Toolbar({
             <FiMessageSquare size={16} />
           </button>
         )}
-        <button className={btnClass} title="Settings" onClick={onOpenSettings}>
-          <FiSettings size={16} />
-        </button>
       </div>
     </div>
   );

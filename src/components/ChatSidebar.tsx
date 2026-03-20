@@ -130,7 +130,7 @@ export function ChatSidebar({ open }: Props) {
             />
           ) : (
             <div className="p-2.5 px-3.5 rounded-xl text-[13px] leading-relaxed max-w-[90%] self-start bg-transparent text-neutral-400">
-              <span className="inline-block bg-gradient-to-r from-neutral-400 via-black to-neutral-400 dark:from-neutral-500 dark:via-white dark:to-neutral-500 bg-[length:200%_100%] bg-clip-text [-webkit-background-clip:text] [-webkit-text-fill-color:transparent] animate-shimmer">Thinking...</span>
+              <span className="inline-block bg-gradient-to-r from-neutral-300 via-neutral-500 to-neutral-300 dark:from-neutral-600 dark:via-neutral-300 dark:to-neutral-600 bg-[length:200%_100%] bg-clip-text [-webkit-background-clip:text] [-webkit-text-fill-color:transparent] animate-shimmer">Thinking...</span>
             </div>
           )
         )}

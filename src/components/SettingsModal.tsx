@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react';
 
 interface Props {
   onClose: () => void;
+  activeUrl?: string;
 }
 
-export function SettingsModal({ onClose }: Props) {
+export function SettingsModal({ onClose, activeUrl }: Props) {
   const [apiKey, setApiKey] = useState('');
   const [anthropicKey, setAnthropicKey] = useState('');
   const [googleKey, setGoogleKey] = useState('');
@@ -111,6 +112,28 @@ export function SettingsModal({ onClose }: Props) {
           />
           <p className="text-[11px] text-neutral-400 dark:text-neutral-500 mt-1.5">Pre-fetches search results for chat queries. Get a key at serper.dev</p>
         </div>
+        {activeUrl && (() => {
+          try {
+            const origin = new URL(activeUrl).origin;
+            return (
+              <div className="mb-5 pt-4 border-t border-neutral-200 dark:border-neutral-700">
+                <label className="block text-[13px] font-medium mb-1.5 text-neutral-700 dark:text-neutral-300">
+                  Site Data
+                </label>
+                <p className="text-[11px] text-neutral-400 dark:text-neutral-500 mb-2">Clear cookies, cache, and storage for {origin}</p>
+                <button
+                  className="h-[34px] px-4 border-none rounded-lg text-[13px] font-medium cursor-pointer transition-colors bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20"
+                  onClick={async () => {
+                    await window.browser.clearSiteData(origin);
+                    onClose();
+                  }}
+                >
+                  Clear Data for This Site
+                </button>
+              </div>
+            );
+          } catch { return null; }
+        })()}
         <div className="flex justify-end gap-2">
           <button
             className="h-[34px] px-4 border-none rounded-lg text-[13px] font-medium cursor-pointer transition-colors bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-600"
