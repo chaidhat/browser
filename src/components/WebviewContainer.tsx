@@ -50,8 +50,9 @@ export const WebviewContainer = forwardRef<WebviewContainerHandle, Props>(
         getActiveWebview()?.loadURL(url);
       },
       setVisibility(visible: boolean) {
-        for (const wv of webviewsRef.current.values()) {
-          wv.style.visibility = visible ? '' : 'hidden';
+        const container = containerRef.current;
+        if (container) {
+          container.style.visibility = visible ? '' : 'hidden';
         }
       },
       findInPage(text: string, forward: boolean) {
@@ -85,13 +86,11 @@ export const WebviewContainer = forwardRef<WebviewContainerHandle, Props>(
       for (const tab of pageTabs) {
         if (!existingIds.has(tab.id)) {
           const wv = document.createElement('webview') as Electron.WebviewTag;
-          wv.src = tab.url;
           wv.setAttribute('autosize', 'on');
           wv.setAttribute('allowpopups', '');
+          wv.setAttribute('useragent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
           wv.className = 'w-full h-full';
-          wv.style.display = 'none';
-          container.appendChild(wv);
-          webviewsRef.current.set(tab.id, wv);
+          wv.style.display = tab.id === activeTabId ? 'flex' : 'none';
 
           const tabId = tab.id;
 
@@ -130,6 +129,11 @@ export const WebviewContainer = forwardRef<WebviewContainerHandle, Props>(
             wv.removeEventListener('did-stop-loading', onDidStopLoading);
             wv.removeEventListener('page-favicon-updated', onPageFaviconUpdated);
           });
+
+          // Append to DOM and set src AFTER all listeners are registered
+          container.appendChild(wv);
+          wv.src = tab.url;
+          webviewsRef.current.set(tab.id, wv);
         }
       }
 
@@ -146,9 +150,10 @@ export const WebviewContainer = forwardRef<WebviewContainerHandle, Props>(
 
     useEffect(() => {
       for (const [id, wv] of webviewsRef.current) {
-        wv.style.display = id === activeTabId ? 'flex' : 'none';
+        const show = id === activeTabId;
+        wv.style.display = show ? 'flex' : 'none';
       }
-    }, [activeTabId, tabs]);
+    }, [activeTabId, tabs, hidden]);
 
     return <div className="flex-1 h-full relative" ref={containerRef} style={hidden ? { display: 'none' } : undefined} />;
   }

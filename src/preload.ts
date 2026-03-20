@@ -13,6 +13,8 @@ export interface ChatMessage {
 
 export interface Settings {
   openaiKey: string;
+  anthropicKey: string;
+  googleKey: string;
   braveKey: string;
   serperKey: string;
 }
@@ -21,6 +23,12 @@ export interface SerperResult {
   title: string;
   link: string;
   snippet: string;
+}
+
+export interface SerperImageResult {
+  title: string;
+  imageUrl: string;
+  link: string;
 }
 
 export interface ChatStreamCallbacks {
@@ -48,26 +56,40 @@ export interface DownloadDoneEvent {
   savePath: string;
 }
 
+export interface HistoryEntry {
+  url: string;
+  title: string;
+  visitCount: number;
+  lastVisited: number;
+}
+
 export interface BrowserAPI {
-  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks) => () => void;
+  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks, modelId?: string) => () => void;
   chatGenerateTitle: (userMessage: string) => Promise<string | null>;
+  chatSuggest: (messages: ChatMessage[], partialInput: string) => Promise<string | null>;
+  autocompleteSuggest: (query: string) => Promise<string | null>;
   getSettings: () => Promise<Settings>;
   saveSettings: (settings: Settings) => Promise<boolean>;
   loadTabs: () => Promise<unknown>;
   saveTabs: (data: unknown) => Promise<boolean>;
+  loadHistory: () => Promise<HistoryEntry[]>;
+  saveHistory: (data: HistoryEntry[]) => Promise<boolean>;
   onOpenUrl: (callback: (url: string) => void) => void;
   onDownloadStarted: (callback: (event: DownloadStartedEvent) => void) => void;
   onDownloadProgress: (callback: (event: DownloadProgressEvent) => void) => void;
   onDownloadDone: (callback: (event: DownloadDoneEvent) => void) => void;
   showInFolder: (filePath: string) => void;
   serperSearch: (query: string) => Promise<SerperResult[] | null>;
+  serperImageSearch: (query: string) => Promise<SerperImageResult[] | null>;
+  clearSiteData: (origin: string) => Promise<boolean>;
   findInPage: (webContentsId: number, text: string, forward: boolean) => void;
   stopFindInPage: (webContentsId: number) => void;
   onFoundInPageResult: (callback: (activeMatch: number, totalMatches: number) => void) => void;
+  onShortcutFromWebview: (callback: (key: string) => void) => void;
 }
 
 contextBridge.exposeInMainWorld('browser', {
-  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks) => {
+  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks, modelId?: string) => {
     const onChunk = (_event: unknown, id: string, chunk: string) => {
       if (id === requestId) callbacks.onChunk(chunk);
     };
@@ -93,15 +115,19 @@ contextBridge.exposeInMainWorld('browser', {
     ipcRenderer.on('chat-stream-chunk', onChunk);
     ipcRenderer.on('chat-stream-done', onDone);
     ipcRenderer.on('chat-stream-error', onError);
-    ipcRenderer.send('chat-send-stream', requestId, messages);
+    ipcRenderer.send('chat-send-stream', requestId, messages, modelId);
 
     return cleanup;
   },
   chatGenerateTitle: (userMessage: string) => ipcRenderer.invoke('chat-generate-title', userMessage),
+  chatSuggest: (messages: ChatMessage[], partialInput: string) => ipcRenderer.invoke('chat-suggest', messages, partialInput),
+  autocompleteSuggest: (query: string) => ipcRenderer.invoke('autocomplete-suggest', query),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings: Settings) => ipcRenderer.invoke('save-settings', settings),
   loadTabs: () => ipcRenderer.invoke('load-tabs'),
   saveTabs: (data: unknown) => ipcRenderer.invoke('save-tabs', data),
+  loadHistory: () => ipcRenderer.invoke('load-history'),
+  saveHistory: (data: HistoryEntry[]) => ipcRenderer.invoke('save-history', data),
   onOpenUrl: (callback: (url: string) => void) => {
     ipcRenderer.on('open-url-in-new-tab', (_event, url: string) => callback(url));
   },
@@ -118,6 +144,8 @@ contextBridge.exposeInMainWorld('browser', {
     ipcRenderer.send('show-in-folder', filePath);
   },
   serperSearch: (query: string) => ipcRenderer.invoke('serper-search', query),
+  serperImageSearch: (query: string) => ipcRenderer.invoke('serper-image-search', query),
+  clearSiteData: (origin: string) => ipcRenderer.invoke('clear-site-data', origin),
   findInPage: (webContentsId: number, text: string, forward: boolean) => {
     ipcRenderer.send('find-in-page', webContentsId, text, forward);
   },
@@ -128,5 +156,8 @@ contextBridge.exposeInMainWorld('browser', {
     ipcRenderer.on('found-in-page-result', (_event, activeMatch: number, totalMatches: number) => {
       callback(activeMatch, totalMatches);
     });
+  },
+  onShortcutFromWebview: (callback: (key: string) => void) => {
+    ipcRenderer.on('shortcut-from-webview', (_event, key: string) => callback(key));
   },
 } satisfies BrowserAPI);

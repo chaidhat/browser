@@ -22,6 +22,7 @@ type TabAction =
   | { type: 'SWITCH_TAB'; id: number }
   | { type: 'UPDATE_TAB'; id: number; title?: string; url?: string }
   | { type: 'CONVERT_TAB'; id: number; url: string }
+  | { type: 'REORDER_TABS'; tabs: TabInfo[] }
   | { type: 'RESTORE'; state: TabState };
 
 function tabReducer(state: TabState, action: TabAction): TabState {
@@ -92,6 +93,9 @@ function tabReducer(state: TabState, action: TabAction): TabState {
         ),
       };
     }
+    case 'REORDER_TABS': {
+      return { ...state, tabs: action.tabs };
+    }
     case 'RESTORE': {
       return action.state;
     }
@@ -118,9 +122,13 @@ export default function App() {
   const [findMatches, setFindMatches] = useState({ active: 0, total: 0 });
   const [thinkingTabs, setThinkingTabs] = useState<Record<number, boolean>>({});
   const [unreadTabs, setUnreadTabs] = useState<Record<number, boolean>>({});
+  const [initialQueries, setInitialQueries] = useState<Record<number, string>>({});
+  const [visitHistory, setVisitHistory] = useState<{ url: string; title: string; visitCount: number; lastVisited: number }[]>([]);
 
   const webviewRef = useRef<WebviewContainerHandle>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const activeTabIdRef = useRef(tabState.activeTabId);
+  activeTabIdRef.current = tabState.activeTabId;
 
   const activeTab = tabState.tabs.find(t => t.id === tabState.activeTabId);
 
@@ -144,6 +152,8 @@ export default function App() {
       } else {
         dispatch({ type: 'CREATE_TAB' });
       }
+      const savedHistory = await window.browser.loadHistory();
+      if (savedHistory?.length) setVisitHistory(savedHistory);
       setInitialized(true);
     })();
   }, []);
@@ -161,6 +171,15 @@ export default function App() {
     }, 500);
   }, [tabState, chatHistories, initialized]);
 
+  const historySaveRef = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => {
+    if (!initialized) return;
+    if (historySaveRef.current) clearTimeout(historySaveRef.current);
+    historySaveRef.current = setTimeout(() => {
+      window.browser.saveHistory(visitHistory);
+    }, 2000);
+  }, [visitHistory, initialized]);
+
   const handleCloseTab = useCallback((id: number) => {
     dispatch({ type: 'CLOSE_TAB', id });
     setChatHistories(prev => {
@@ -172,7 +191,27 @@ export default function App() {
 
   const handleTabUpdate = useCallback((id: number, updates: { title?: string; url?: string }) => {
     dispatch({ type: 'UPDATE_TAB', id, ...updates });
-  }, []);
+    if (updates.url && updates.url !== 'about:blank' && !updates.url.startsWith('data:')) {
+      setVisitHistory(prev => {
+        const existing = prev.find(h => h.url === updates.url);
+        if (existing) {
+          return prev.map(h => h.url === updates.url
+            ? { ...h, visitCount: h.visitCount + 1, lastVisited: Date.now(), title: updates.title || h.title }
+            : h
+          );
+        }
+        const entry = { url: updates.url!, title: updates.title || '', visitCount: 1, lastVisited: Date.now() };
+        return [...prev, entry].slice(-500);
+      });
+    }
+    if (updates.title && !updates.url) {
+      setVisitHistory(prev => {
+        const tab = tabState.tabs.find(t => t.id === id);
+        if (!tab?.url) return prev;
+        return prev.map(h => h.url === tab.url ? { ...h, title: updates.title! } : h);
+      });
+    }
+  }, [tabState.tabs]);
 
   const handleLoadingChange = useCallback((tabId: number, isLoading: boolean) => {
     setLoadingTabs(prev => ({ ...prev, [tabId]: isLoading }));
@@ -193,7 +232,7 @@ export default function App() {
   const handleThinkingChange = useCallback((tabId: number, thinking: boolean) => {
     setThinkingTabs(prev => ({ ...prev, [tabId]: thinking }));
     // When thinking stops (response done) and tab isn't active, mark unread
-    if (!thinking) {
+    if (!thinking && tabId !== activeTabIdRef.current) {
       setUnreadTabs(prev => ({ ...prev, [tabId]: true }));
     }
   }, []);
@@ -204,14 +243,18 @@ export default function App() {
     });
 
     window.browser.onDownloadStarted((event) => {
-      setDownloads(prev => [...prev, {
-        id: event.id,
-        fileName: event.fileName,
-        totalBytes: event.totalBytes,
-        receivedBytes: 0,
-        savePath: event.savePath,
-        state: 'downloading',
-      }]);
+      setDownloads(prev => {
+        // Deduplicate — if a download with the same savePath is already active, replace it
+        const filtered = prev.filter(dl => dl.savePath !== event.savePath || dl.state !== 'downloading');
+        return [...filtered, {
+          id: event.id,
+          fileName: event.fileName,
+          totalBytes: event.totalBytes,
+          receivedBytes: 0,
+          savePath: event.savePath,
+          state: 'downloading',
+        }];
+      });
     });
 
     window.browser.onDownloadProgress((event) => {
@@ -232,6 +275,15 @@ export default function App() {
           ? { ...dl, state: event.state, savePath: event.savePath }
           : dl
       ));
+    });
+
+    // Forward Cmd+T/F intercepted from webview to our document keydown handler
+    window.browser.onShortcutFromWebview((key: string) => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key,
+        metaKey: true,
+        bubbles: true,
+      }));
     });
   }, []);
 
@@ -378,6 +430,19 @@ export default function App() {
     }
   }, [activeTab?.type, activeTab?.id]);
 
+  const handleSearch = useCallback((query: string) => {
+    // If current tab is an empty chat, use it; otherwise create a new chat tab
+    if (activeTab?.type === 'chat' && (!chatHistories[activeTab.id] || chatHistories[activeTab.id].length === 0)) {
+      setInitialQueries(prev => ({ ...prev, [activeTab.id]: query }));
+    } else {
+      // We need to create a new chat tab and set its initial query
+      // The tab ID will be tabState.nextTabId
+      const newTabId = tabState.nextTabId;
+      dispatch({ type: 'CREATE_TAB' });
+      setInitialQueries(prev => ({ ...prev, [newTabId]: query }));
+    }
+  }, [activeTab?.type, activeTab?.id, chatHistories, tabState.nextTabId]);
+
   const isChat = activeTab?.type === 'chat';
 
   return (
@@ -395,20 +460,27 @@ export default function App() {
         }}
         onClose={handleCloseTab}
         onCreate={() => dispatch({ type: 'CREATE_TAB' })}
+        onReorder={(tabs) => dispatch({ type: 'REORDER_TABS', tabs })}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <div className="flex-1 flex flex-col min-w-0 h-full bg-white dark:bg-neutral-900">
-        <Toolbar
-          activeUrl={activeTab?.url || ''}
-          loading={activeTab ? !!loadingTabs[activeTab.id] : false}
-          sidebarOpen={sidebarOpen}
-          onNavigate={handleNavigate}
-          onBack={() => webviewRef.current?.goBack()}
-          onForward={() => webviewRef.current?.goForward()}
-          onReload={() => webviewRef.current?.reload()}
-          onToggleChat={() => setSidebarOpen(prev => !prev)}
-          onOpenSettings={() => setSettingsOpen(true)}
-          isChatTab={isChat}
-        />
+        {!isChat && (
+          <Toolbar
+            activeUrl={activeTab?.url || ''}
+            loading={activeTab ? !!loadingTabs[activeTab.id] : false}
+            sidebarOpen={sidebarOpen}
+            onNavigate={handleNavigate}
+            onSearch={handleSearch}
+            onBack={() => webviewRef.current?.goBack()}
+            onForward={() => webviewRef.current?.goForward()}
+            onReload={() => webviewRef.current?.reload()}
+            onToggleChat={() => setSidebarOpen(prev => !prev)}
+            onOpenSettings={() => setSettingsOpen(true)}
+            isChatTab={isChat}
+            allTabs={tabState.tabs}
+            visitHistory={visitHistory}
+          />
+        )}
         <div className="flex flex-1 min-h-0 relative">
           {findOpen && (
             <FindBar
@@ -430,6 +502,9 @@ export default function App() {
               onNavigate={(url) => dispatch({ type: 'CONVERT_TAB', id: tab.id, url })}
               onOpenLink={(url) => dispatch({ type: 'CREATE_TAB', url })}
               onThinkingChange={handleThinkingChange}
+              initialQuery={initialQueries[tab.id]}
+              onInitialQueryConsumed={(tabId) => setInitialQueries(prev => { const next = { ...prev }; delete next[tabId]; return next; })}
+              visitHistory={visitHistory}
             />
           ))}
           <WebviewContainer
@@ -450,7 +525,7 @@ export default function App() {
           onDismissAll={() => setDownloads([])}
         />
       </div>
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} activeUrl={activeTab?.url} onClearHistory={() => { setVisitHistory([]); window.browser.saveHistory([]); }} />}
     </div>
   );
 }

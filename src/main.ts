@@ -5,24 +5,29 @@ import fs from 'fs';
 app.name = 'Pause';
 nativeTheme.themeSource = 'system';
 
-app.setAsDefaultProtocolClient('http');
-app.setAsDefaultProtocolClient('https');
+if (app.isPackaged) {
+  app.setAsDefaultProtocolClient('http');
+  app.setAsDefaultProtocolClient('https');
+}
 
 interface Settings {
   openaiKey: string;
+  anthropicKey: string;
+  googleKey: string;
   braveKey: string;
   serperKey: string;
 }
 
 const settingsPath = path.join(app.getPath('userData'), 'settings.json');
 const tabsPath = path.join(app.getPath('userData'), 'tabs.json');
+const historyPath = path.join(app.getPath('userData'), 'history.json');
 
 function loadSettings(): Settings {
   try {
     const data = fs.readFileSync(settingsPath, 'utf-8');
-    return { openaiKey: '', braveKey: '', serperKey: '', ...JSON.parse(data) };
+    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', ...JSON.parse(data) };
   } catch {
-    return { openaiKey: '', braveKey: '', serperKey: '' };
+    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '' };
   }
 }
 
@@ -49,6 +54,14 @@ function createWindow(): void {
   });
 
   mainWindow.loadFile(path.join(__dirname, '..', 'ui', 'index.html'));
+
+  // Intercept Cmd+T and Cmd+F from the main window itself (e.g., when focus is in a text input)
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.meta && (input.key === 't' || input.key === 'f') && input.type === 'keyDown') {
+      event.preventDefault();
+      mainWindow?.webContents.send('shortcut-from-webview', input.key);
+    }
+  });
 
   // Allow all permission requests from webviews (camera, mic, notifications, WebAuthn/passkeys, etc.)
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
@@ -92,37 +105,46 @@ function createWindow(): void {
     // Enable pinch-to-zoom on webview content
     webContents.setVisualZoomLevelLimits(1, 5);
 
-    // Handle downloads from webviews
-    webContents.session.on('will-download', (_dlEvent, item) => {
-      const fileName = item.getFilename();
-      const totalBytes = item.getTotalBytes();
-      const downloadId = Date.now().toString();
-      const savePath = path.join(app.getPath('downloads'), fileName);
-      item.setSavePath(savePath);
+    // Intercept Cmd+T and Cmd+F from webview so the app always handles them
+    webContents.on('before-input-event', (event, input) => {
+      if (input.meta && (input.key === 't' || input.key === 'f') && input.type === 'keyDown') {
+        event.preventDefault();
+        mainWindow?.webContents.send('shortcut-from-webview', input.key);
+      }
+    });
 
-      mainWindow?.webContents.send('download-started', {
-        id: downloadId,
-        fileName,
-        totalBytes,
-        savePath,
-      });
+  });
 
-      item.on('updated', (_updEvent, state) => {
-        if (state === 'progressing') {
-          mainWindow?.webContents.send('download-progress', {
-            id: downloadId,
-            receivedBytes: item.getReceivedBytes(),
-            totalBytes: item.getTotalBytes(),
-          });
-        }
-      });
+  // Handle downloads — register once on the default session to avoid listener leaks
+  session.defaultSession.on('will-download', (_dlEvent, item) => {
+    const fileName = item.getFilename();
+    const totalBytes = item.getTotalBytes();
+    const downloadId = Date.now().toString();
+    const savePath = path.join(app.getPath('downloads'), fileName);
+    item.setSavePath(savePath);
 
-      item.once('done', (_doneEvent, state) => {
-        mainWindow?.webContents.send('download-done', {
+    mainWindow?.webContents.send('download-started', {
+      id: downloadId,
+      fileName,
+      totalBytes,
+      savePath,
+    });
+
+    item.on('updated', (_updEvent, state) => {
+      if (state === 'progressing') {
+        mainWindow?.webContents.send('download-progress', {
           id: downloadId,
-          state, // 'completed', 'cancelled', 'interrupted'
-          savePath: item.getSavePath(),
+          receivedBytes: item.getReceivedBytes(),
+          totalBytes: item.getTotalBytes(),
         });
+      }
+    });
+
+    item.once('done', (_doneEvent, state) => {
+      mainWindow?.webContents.send('download-done', {
+        id: downloadId,
+        state, // 'completed', 'cancelled', 'interrupted'
+        savePath: item.getSavePath(),
       });
     });
   });
@@ -143,6 +165,13 @@ ipcMain.handle('save-settings', (_event, settings: Settings) => {
   return true;
 });
 
+ipcMain.handle('clear-site-data', async (_event, origin: string) => {
+  const ses = session.defaultSession;
+  await ses.clearStorageData({ origin, storages: ['cookies', 'localstorage', 'indexdb', 'websql', 'serviceworkers', 'cachestorage'] });
+  await ses.clearCache();
+  return true;
+});
+
 // Tabs persistence IPC
 ipcMain.handle('load-tabs', () => {
   try {
@@ -155,6 +184,21 @@ ipcMain.handle('load-tabs', () => {
 
 ipcMain.handle('save-tabs', (_event, data: unknown) => {
   fs.writeFileSync(tabsPath, JSON.stringify(data));
+  return true;
+});
+
+// History persistence IPC
+ipcMain.handle('load-history', () => {
+  try {
+    const data = fs.readFileSync(historyPath, 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return [];
+  }
+});
+
+ipcMain.handle('save-history', (_event, data: unknown) => {
+  fs.writeFileSync(historyPath, JSON.stringify(data));
   return true;
 });
 
@@ -213,10 +257,37 @@ ipcMain.handle('serper-search', async (_event, query: string) => {
   }
 });
 
+// Serper Image Search IPC
+ipcMain.handle('serper-image-search', async (_event, query: string) => {
+  const settings = loadSettings();
+  if (!settings.serperKey) return null;
+  try {
+    const res = await fetch('https://google.serper.dev/images', {
+      method: 'POST',
+      headers: {
+        'X-API-KEY': settings.serperKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ q: query, num: 8 }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data.images || []).slice(0, 8).map((r: any) => ({
+      title: r.title,
+      imageUrl: r.imageUrl,
+      link: r.link,
+    }));
+  } catch {
+    return null;
+  }
+});
+
 // OpenAI Chat IPC (using Vercel AI SDK)
 import { streamText, generateText, tool, stepCountIs } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import type { OpenAILanguageModelResponsesOptions } from '@ai-sdk/openai';
+import { createAnthropic } from '@ai-sdk/anthropic';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { z } from 'zod';
 
 interface ChatContentBlock {
@@ -290,26 +361,52 @@ function buildTools(settings: Settings) {
   return tools;
 }
 
-ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMessage[]) => {
+function getModelForId(settings: Settings, modelId: string) {
+  switch (modelId) {
+    case 'claude-opus-4-6': {
+      if (!settings.anthropicKey) return { error: 'No Anthropic API key configured. Open Settings to add one.' };
+      const anthropic = createAnthropic({ apiKey: settings.anthropicKey });
+      return { model: anthropic('claude-opus-4-6') };
+    }
+    case 'gemini-3.1-pro': {
+      if (!settings.googleKey) return { error: 'No Google API key configured. Open Settings to add one.' };
+      const google = createGoogleGenerativeAI({
+        apiKey: settings.googleKey,
+        baseURL: 'https://generativelanguage.googleapis.com/v1alpha',
+      });
+      return { model: google('gemini-3.1-pro-preview') };
+    }
+    case 'gpt-5.4':
+    default: {
+      if (!settings.openaiKey) return { error: 'No OpenAI API key configured. Open Settings to add one.' };
+      const openai = createOpenAI({ apiKey: settings.openaiKey });
+      return { model: openai.responses('gpt-5.4'), isOpenAI: true };
+    }
+  }
+}
+
+ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMessage[], modelId?: string) => {
   const settings = loadSettings();
-  if (!settings.openaiKey) {
-    event.sender.send('chat-stream-error', requestId, 'No OpenAI API key configured. Open Settings to add one.');
+  const resolved = getModelForId(settings, modelId || 'gpt-5.4');
+  if ('error' in resolved) {
+    event.sender.send('chat-stream-error', requestId, resolved.error);
     return;
   }
 
   try {
-    const openai = createOpenAI({ apiKey: settings.openaiKey });
     const tools = buildTools(settings);
     const result = streamText({
-      model: openai.responses('gpt-5.4'),
+      model: resolved.model,
       messages: toSdkMessages(messages) as any,
       tools,
       stopWhen: stepCountIs(5),
-      providerOptions: {
-        openai: {
-          reasoningEffort: 'high',
-        } satisfies OpenAILanguageModelResponsesOptions,
-      },
+      ...(resolved.isOpenAI ? {
+        providerOptions: {
+          openai: {
+            reasoningEffort: 'high',
+          } satisfies OpenAILanguageModelResponsesOptions,
+        },
+      } : {}),
       onError({ error }) {
         const message = error instanceof Error ? error.message : String(error);
         event.sender.send('chat-stream-error', requestId, `Stream error: ${message}`);
@@ -326,6 +423,101 @@ ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMe
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     event.sender.send('chat-stream-error', requestId, `Request failed: ${message}`);
+  }
+});
+
+// Generate inline suggestion using a lightweight model
+ipcMain.handle('chat-suggest', async (_event, messages: ChatMessage[], partialInput: string) => {
+  const settings = loadSettings();
+
+  // Pick a lightweight model: OpenAI nano > Anthropic haiku > Google spark
+  let suggestModel;
+  if (settings.openaiKey) {
+    const openai = createOpenAI({ apiKey: settings.openaiKey });
+    suggestModel = openai.chat('gpt-5.4-nano');
+  } else if (settings.anthropicKey) {
+    const anthropic = createAnthropic({ apiKey: settings.anthropicKey });
+    suggestModel = anthropic('claude-haiku-4-5-20251001');
+  } else if (settings.googleKey) {
+    const google = createGoogleGenerativeAI({ apiKey: settings.googleKey });
+    suggestModel = google('gemini-2.0-flash-lite');
+  } else {
+    return null;
+  }
+
+  try {
+    const contextMessages = messages.slice(-10).map(m => {
+      const content = Array.isArray(m.content) ? m.content.filter(b => b.type === 'text').map(b => b.text).join(' ') : m.content;
+      return `${m.role}: ${content}`;
+    }).join('\n');
+
+    const isEmpty = !partialInput;
+
+    if (isEmpty) {
+      const system = `You are an autocomplete engine inside a chat input. Suggest a short, natural question or message the user might want to type next based on the conversation context. Output ONLY the suggested text. Keep it short (under 15 words). If there's no conversation yet, suggest an interesting question.`;
+      const prompt = contextMessages
+        ? `Conversation so far:\n${contextMessages}\n\nSuggest what the user might type next:`
+        : 'Suggest an interesting question the user might ask:';
+      const result = await generateText({
+        model: suggestModel,
+        system,
+        prompt,
+        maxOutputTokens: 60,
+      });
+      return result.text?.trim() || null;
+    }
+
+    // For partial input: ask the model to complete the full message, then strip the prefix
+    const system = `You are an autocomplete engine. The user is typing a message. Complete their message naturally. Output ONLY the full completed message (including what they already typed). Keep it short (under 20 words total). If you can't predict anything useful, repeat back exactly what they typed.`;
+    const prompt = contextMessages
+      ? `Conversation so far:\n${contextMessages}\n\nComplete this message: "${partialInput}"`
+      : `Complete this message: "${partialInput}"`;
+
+    const result = await generateText({
+      model: suggestModel,
+      system,
+      prompt,
+      maxOutputTokens: 60,
+    });
+    let full = result.text?.trim() || null;
+    if (!full) return null;
+    // Strip quotes if the model wrapped it
+    if (full.startsWith('"') && full.endsWith('"')) full = full.slice(1, -1);
+    // Find where the user's input appears and extract the continuation
+    const lowerFull = full.toLowerCase();
+    const lowerInput = partialInput.toLowerCase();
+    const idx = lowerFull.indexOf(lowerInput);
+    if (idx !== -1) {
+      const continuation = full.substring(idx + partialInput.length);
+      return continuation || null;
+    }
+    // Fallback: if model didn't include the prefix, add a space
+    if (!full.startsWith(' ')) full = ' ' + full;
+    return full;
+  } catch {
+    return null;
+  }
+});
+
+// Google Autocomplete suggestions (no API key needed)
+ipcMain.handle('autocomplete-suggest', async (_event, query: string) => {
+  if (!query) return null;
+  try {
+    const res = await fetch(`https://suggestqueries.google.com/complete/search?client=firefox&q=${encodeURIComponent(query)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const suggestions: string[] = data[1];
+    if (!suggestions || suggestions.length === 0) return null;
+    // Find the first suggestion that starts with what the user typed
+    const lowerQuery = query.toLowerCase();
+    for (const s of suggestions) {
+      if (s.toLowerCase().startsWith(lowerQuery) && s.length > query.length) {
+        return s.substring(query.length);
+      }
+    }
+    return null;
+  } catch {
+    return null;
   }
 });
 
