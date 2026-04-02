@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { IoClose } from 'react-icons/io5';
-import { FiArrowUp, FiArrowRight, FiChevronDown, FiCopy, FiCheck, FiSquare } from 'react-icons/fi';
+import { FiArrowUp, FiArrowRight, FiChevronDown, FiCopy, FiCheck, FiSquare, FiEdit2, FiRefreshCw } from 'react-icons/fi';
 import { renderContent } from '../utils/renderContent';
 import type { ChatMessage, ChatContentBlock, SerperResult, SerperImageResult, HistoryEntry } from '../preload';
 import logoLight from '../assets/logo.png';
@@ -82,6 +82,43 @@ function CopyButton({ text, className = '' }: { text: string; className?: string
   );
 }
 
+function RetryButton({ index, onRetry }: { index: number; onRetry: (idx: number, modelId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(prev => !prev)}
+        className="border-none bg-transparent cursor-pointer p-1 rounded transition-colors text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
+        title="Retry with different model"
+      >
+        <FiRefreshCw size={14} />
+      </button>
+      {open && (
+        <div className="absolute bottom-full left-0 mb-1 z-50 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-lg overflow-hidden">
+          {MODELS.map(m => (
+            <button
+              key={m.id}
+              onClick={() => { setOpen(false); onRetry(index, m.id); }}
+              className="block w-full text-left px-3 py-1.5 border-none bg-transparent cursor-pointer text-[12px] text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700 transition-colors whitespace-nowrap"
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function formatDuration(ms: number): string {
   const s = ms / 1000;
   if (s < 60) return `${s.toFixed(1)}s`;
@@ -104,6 +141,8 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   const [acIndex, setAcIndex] = useState(-1);
   const [showAc, setShowAc] = useState(false);
   const [ghostSuggestion, setGhostSuggestion] = useState<string | null>(null);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const editPrevInputRef = useRef<string>('');
   const ghostRequestRef = useRef(0);
   const suggestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -300,8 +339,10 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
       inputRef.current.style.height = 'auto';
     }
 
+    const baseMessages = editingIndex !== null ? messages.slice(0, editingIndex) : messages;
+    setEditingIndex(null);
     const newMessages: DisplayMessage[] = [
-      ...messages,
+      ...baseMessages,
       { role: 'user', content: text, images: images.length > 0 ? images : undefined, pdfs: pdfs.length > 0 ? pdfs : undefined },
     ];
     onMessagesChange(tabId, newMessages);
@@ -422,6 +463,29 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     }, selectedModel);
   }, [inputValue, pendingImages, pendingPdfs, messages, tabId, tabTitle, selectedModel, onMessagesChange, onTitleChange, onThinkingChange]);
 
+  const retryRef = useRef<{ assistantIndex: number; modelId: string } | null>(null);
+
+  const retryWithModel = useCallback((assistantIndex: number, modelId: string) => {
+    const userIdx = assistantIndex - 1;
+    if (userIdx < 0 || messages[userIdx]?.role !== 'user') return;
+    const userMsg = messages[userIdx];
+    // Set editing index to the user message so sendChat truncates properly
+    setEditingIndex(userIdx);
+    setSelectedModel(modelId);
+    setInputValue(userMsg.content);
+    if (userMsg.images) setPendingImages(userMsg.images);
+    if (userMsg.pdfs) setPendingPdfs(userMsg.pdfs);
+    retryRef.current = { assistantIndex, modelId };
+  }, [messages]);
+
+  // Auto-send when retry is queued
+  useEffect(() => {
+    if (retryRef.current && editingIndex !== null && inputValue) {
+      retryRef.current = null;
+      sendChat();
+    }
+  }, [editingIndex, inputValue, sendChat]);
+
   const stopChat = useCallback(() => {
     if (currentRequestIdRef.current) {
       window.browser.chatAbortStream(currentRequestIdRef.current);
@@ -534,7 +598,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
           {messages.map((msg, i) => {
             if (msg.role === 'error') {
               return (
-                <div key={i} className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] break-words whitespace-pre-wrap bg-red-500/10 text-red-600 dark:text-red-400 self-start border border-red-500/20" style={{ fontFamily: "'PT Serif', serif" }}>
+                <div key={i} className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] break-words whitespace-pre-wrap bg-red-500/10 text-red-600 dark:text-red-400 self-start border border-red-500/20" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif" }}>
                   {msg.content}
                 </div>
               );
@@ -544,7 +608,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
                 <div key={i} className="flex flex-col self-start max-w-[90%]">
                   <div
                     className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-[15px] leading-relaxed break-words text-black dark:text-neutral-200"
-                    style={{ fontFamily: "'PT Serif', serif" }}
+                    style={{ fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif" }}
                     dangerouslySetInnerHTML={{ __html: renderContent(msg.content) }}
                     ref={(el) => {
                       if (!el) return;
@@ -570,18 +634,19 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
                       });
                     }}
                   />
-                  <div className="flex items-center gap-1 mt-0.5 ml-1">
+                  <div className="flex items-center gap-1 mt-1 ml-4">
                     {msg.durationMs != null && (
                       <span className="text-[11px] text-neutral-400 dark:text-neutral-500">{formatDuration(msg.durationMs)}</span>
                     )}
                     <CopyButton text={msg.content} />
+                    <RetryButton index={i} onRetry={retryWithModel} />
                   </div>
                 </div>
               );
             }
             return (
-              <div key={i} className="flex flex-col gap-2 self-end max-w-[90%]">
-                <div className="p-2.5 px-3.5 rounded-xl rounded-br-sm text-[15px] leading-relaxed break-words whitespace-pre-wrap bg-neutral-100 dark:bg-neutral-900 dark:text-neutral-200" style={{ fontFamily: "'PT Serif', serif" }}>
+              <div key={i} className="group/user flex flex-col self-end max-w-[90%]">
+                <div className="p-2.5 px-3.5 rounded-xl rounded-br-sm text-[15px] leading-relaxed break-words whitespace-pre-wrap bg-neutral-100 dark:bg-neutral-900 dark:text-neutral-200" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif" }}>
                   {msg.images && msg.images.map((img, j) => (
                     <img key={j} src={img} className="block max-w-full max-h-[300px] rounded-lg mb-1.5 object-contain cursor-pointer hover:opacity-80 transition-opacity" onClick={() => setLightboxImage(img)} />
                   ))}
@@ -593,8 +658,25 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
                   ))}
                   {msg.content}
                 </div>
+                <div className="flex justify-end opacity-0 group-hover/user:opacity-100 transition-opacity">
+                  <CopyButton text={msg.content} />
+                  <button
+                    onClick={() => {
+                      editPrevInputRef.current = inputValue;
+                      setEditingIndex(i);
+                      setInputValue(msg.content);
+                      if (inputRef.current) {
+                        inputRef.current.focus();
+                      }
+                    }}
+                    className="border-none bg-transparent cursor-pointer p-1 rounded transition-colors text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
+                    title="Edit"
+                  >
+                    <FiEdit2 size={14} />
+                  </button>
+                </div>
                 {i === 0 && msg.searchResults && (msg.searchResults.results.length > 0 || (msg.searchResults.images && msg.searchResults.images.length > 0)) && (
-                  <div className="self-start w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 overflow-hidden" style={{ fontFamily: "'PT Serif', serif" }}>
+                  <div className="self-start w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 overflow-hidden" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif" }}>
                     <div className="px-3 py-1.5 text-[11px] font-medium text-neutral-500 dark:text-neutral-400 border-b border-neutral-200 dark:border-neutral-700">
                       Search results
                     </div>
@@ -628,8 +710,8 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
                         href={r.link}
                         className="flex flex-col gap-0.5 px-3 py-2 hover:bg-neutral-100 dark:hover:bg-neutral-700/50 transition-colors cursor-pointer border-b border-neutral-100 dark:border-neutral-700/50 last:border-b-0 no-underline"
                       >
-                        <span className="text-[15px] font-medium text-blue-600 dark:text-blue-400 truncate" style={{ fontFamily: "'PT Serif', serif" }}>{r.title}</span>
-                        <span className="text-[13px] text-neutral-500 dark:text-neutral-400 line-clamp-1" style={{ fontFamily: "'PT Serif', serif" }}>{r.snippet}</span>
+                        <span className="text-[15px] font-medium truncate" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif", color: '#007AFF' }}>{r.title}</span>
+                        <span className="text-[15px] text-neutral-500 dark:text-neutral-400 line-clamp-1" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif" }}>{r.snippet}</span>
                       </a>
                     ))}
                   </div>
@@ -641,11 +723,11 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             streamingContent ? (
               <div
                 className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-[15px] leading-relaxed max-w-[90%] break-words text-black dark:text-neutral-200 self-start"
-                style={{ fontFamily: "'PT Serif', serif" }}
+                style={{ fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif" }}
                 dangerouslySetInnerHTML={{ __html: renderContent(streamingContent) }}
               />
             ) : (
-              <div className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] self-start bg-transparent text-neutral-400" style={{ fontFamily: "'PT Serif', serif" }}>
+              <div className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] self-start bg-transparent text-neutral-400" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif" }}>
                 <span className="inline-block bg-gradient-to-r from-neutral-300 via-neutral-500 to-neutral-300 dark:from-neutral-600 dark:via-neutral-300 dark:to-neutral-600 bg-[length:200%_100%] bg-clip-text [-webkit-background-clip:text] [-webkit-text-fill-color:transparent] animate-shimmer">
                   Thinking... {thinkingSeconds > 0 ? `${thinkingSeconds >= 60 ? `${Math.floor(thinkingSeconds / 60)}m ${Math.floor(thinkingSeconds % 60)}s` : `${Math.floor(thinkingSeconds)}s`}` : ''}
                 </span>
@@ -689,12 +771,27 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             ))}
           </div>
         )}
+        {editingIndex !== null && (
+          <div className="flex items-center justify-between px-1 pb-1 no-drag">
+            <span className="text-[12px] text-neutral-500 dark:text-neutral-400">Editing message</span>
+            <button
+              className="border-none bg-transparent cursor-pointer p-0.5 rounded transition-colors text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
+              title="Cancel edit"
+              onClick={() => {
+                setEditingIndex(null);
+                setInputValue(editPrevInputRef.current);
+              }}
+            >
+              <IoClose size={16} />
+            </button>
+          </div>
+        )}
         <div className="flex items-start gap-2.5 pb-0 pr-0 no-drag w-full">
           <div className="relative flex-1">
             <textarea
               ref={inputRef}
               className="h-10 w-full resize-none border border-neutral-200 dark:border-neutral-700 rounded-[10px] bg-white dark:bg-neutral-900 text-black dark:text-neutral-200 text-[15px] py-2 px-3.5 outline-none max-h-[120px] overflow-hidden transition-colors placeholder:text-neutral-400 dark:placeholder:text-neutral-600 box-border"
-              style={{ fontFamily: "'PT Serif', serif" }}
+              style={{ fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif" }}
               placeholder={ghostSuggestion && !inputValue ? '' : 'Ask anything...'}
               rows={1}
               value={inputValue}
@@ -705,7 +802,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             {ghostSuggestion && (
               <div
                 className="absolute inset-0 pointer-events-none border border-transparent rounded-[10px] py-2 px-3.5 text-[15px] overflow-hidden whitespace-nowrap text-ellipsis h-10 box-border"
-                style={{ fontFamily: "'PT Serif', serif" }}
+                style={{ fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif" }}
               >
                 {inputValue && <span className="invisible whitespace-pre">{inputValue}</span>}
                 <span className="text-neutral-400 dark:text-neutral-600">{ghostSuggestion}</span>
@@ -717,7 +814,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
                   {acSuggestions.map((s, i) => (
                     <div
                       key={s.url}
-                      className={`px-3 py-1.5 text-[13px] cursor-pointer flex items-center gap-2 truncate ${
+                      className={`px-3 py-1.5 text-[15px] cursor-pointer flex items-center gap-2 truncate ${
                         i === acIndex
                           ? 'bg-blue-500 text-white'
                           : 'text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700'

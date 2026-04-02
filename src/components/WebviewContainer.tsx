@@ -156,6 +156,6 @@ export const WebviewContainer = forwardRef<WebviewContainerHandle, Props>(
       }
     }, [activeTabId, tabs, hidden]);
 
-    return <div className="flex-1 h-full relative" ref={containerRef} style={hidden ? { display: 'none' } : undefined} />;
+    return <div className="flex-1 h-full relative bg-white" ref={containerRef} style={hidden ? { display: 'none' } : undefined} />;
   }
 );

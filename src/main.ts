@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, shell, session } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, shell, session, desktopCapturer, systemPreferences } from 'electron';
 import path from 'path';
 import fs from 'fs';
 
@@ -74,10 +74,27 @@ function createWindow(): void {
 
   // Allow all permission requests from webviews (camera, mic, notifications, WebAuthn/passkeys, etc.)
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    // Always grant at the Electron level — macOS will enforce its own camera/mic/screen prompts
+    if (permission === 'media') {
+      // Trigger macOS permission dialogs (fire-and-forget; macOS caches the result)
+      systemPreferences.askForMediaAccess('camera').catch(() => {});
+      systemPreferences.askForMediaAccess('microphone').catch(() => {});
+    }
     callback(true);
   });
-  session.defaultSession.setPermissionCheckHandler(() => {
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
     return true;
+  });
+
+  // Handle screen sharing requests — show native macOS source picker
+  session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
+    const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] });
+    // Auto-select the first screen source (entire screen)
+    if (sources.length > 0) {
+      callback({ video: sources[0] });
+    } else {
+      callback({});
+    }
   });
 
   // Track webview webContents by ID for find-in-page
@@ -89,6 +106,61 @@ function createWindow(): void {
     webviewContentsMap.set(id, webContents);
     webContents.on('destroyed', () => {
       webviewContentsMap.delete(id);
+    });
+
+    // Handle HTTP Basic/Digest authentication (e.g., password-protected university pages)
+    webContents.on('login', (event, _authenticationResponseDetails, _authInfo, callback) => {
+      event.preventDefault();
+      const win = BrowserWindow.getFocusedWindow() || mainWindow;
+      const loginWin = new BrowserWindow({
+        width: 380,
+        height: 220,
+        parent: win || undefined,
+        modal: true,
+        show: false,
+        resizable: false,
+        webPreferences: {
+          nodeIntegration: true,
+          contextIsolation: false,
+        },
+      });
+      loginWin.removeMenu();
+      const html = `<!DOCTYPE html><html><head><style>
+        body{font-family:-apple-system,system-ui,sans-serif;padding:20px;background:#f5f5f5}
+        h3{margin:0 0 12px}input{width:100%;padding:6px 8px;margin:4px 0 10px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px}
+        .btns{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
+        button{padding:6px 16px;border-radius:4px;border:1px solid #ccc;cursor:pointer}
+        button.primary{background:#007AFF;color:#fff;border:none}
+      </style></head><body>
+        <h3>Sign In</h3>
+        <label>Username</label><input id="u" autofocus>
+        <label>Password</label><input id="p" type="password">
+        <div class="btns"><button onclick="require('electron').ipcRenderer.send('login-cancel')">Cancel</button>
+        <button class="primary" onclick="require('electron').ipcRenderer.send('login-submit',document.getElementById('u').value,document.getElementById('p').value)">Log In</button></div>
+        <script>document.getElementById('p').addEventListener('keydown',e=>{if(e.key==='Enter')document.querySelector('.primary').click()})</script>
+      </body></html>`;
+      loginWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+      loginWin.once('ready-to-show', () => loginWin.show());
+
+      const onSubmit = (_e: any, username: string, password: string) => {
+        callback(username, password);
+        cleanup();
+        loginWin.close();
+      };
+      const onCancel = () => {
+        callback();
+        cleanup();
+        loginWin.close();
+      };
+      const cleanup = () => {
+        ipcMain.removeListener('login-submit', onSubmit);
+        ipcMain.removeListener('login-cancel', onCancel);
+      };
+      ipcMain.once('login-submit', onSubmit);
+      ipcMain.once('login-cancel', onCancel);
+      loginWin.on('closed', () => {
+        cleanup();
+      });
     });
     webContents.setWindowOpenHandler(({ url, disposition }) => {
       // Allow popups for OAuth/login flows (disposition is 'new-window' for window.open)
@@ -477,43 +549,71 @@ ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMe
   const abortController = new AbortController();
   activeAbortControllers.set(requestId, abortController);
 
-  try {
-    const tools = buildTools(settings);
-    const isChatCompletions = 'isChatCompletions' in resolved && resolved.isChatCompletions;
-    const result = streamText({
-      model: resolved.model,
-      messages: toSdkMessages(messages) as any,
-      ...(!isChatCompletions ? { tools, stopWhen: stepCountIs(5) } : {}),
-      abortSignal: abortController.signal,
-      ...(resolved.isOpenAI && !isChatCompletions ? {
-        providerOptions: {
-          openai: {
-            reasoningEffort: 'high',
-          } satisfies OpenAILanguageModelResponsesOptions,
-        },
-      } : {}),
-      onError({ error }) {
-        const message = error instanceof Error ? error.message : String(error);
-        event.sender.send('chat-stream-error', requestId, `Stream error: ${message}`);
-      },
-    });
+  const MAX_RETRIES = 3;
+  const tools = buildTools(settings);
+  const isChatCompletions = 'isChatCompletions' in resolved && resolved.isChatCompletions;
 
-    for await (const part of result.fullStream) {
-      if (part.type === 'text-delta') {
-        event.sender.send('chat-stream-chunk', requestId, part.text);
-      }
-    }
-
-    activeAbortControllers.delete(requestId);
-    event.sender.send('chat-stream-done', requestId);
-  } catch (err: unknown) {
-    activeAbortControllers.delete(requestId);
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (abortController.signal.aborted) {
+      activeAbortControllers.delete(requestId);
       event.sender.send('chat-stream-done', requestId);
       return;
     }
-    const message = err instanceof Error ? err.message : String(err);
-    event.sender.send('chat-stream-error', requestId, `Request failed: ${message}`);
+
+    try {
+      let collected = '';
+      const result = streamText({
+        model: resolved.model,
+        messages: toSdkMessages(messages) as any,
+        ...(!isChatCompletions ? { tools, stopWhen: stepCountIs(5) } : {}),
+        abortSignal: abortController.signal,
+        ...(resolved.isOpenAI ? {
+          providerOptions: {
+            openai: {
+              reasoningEffort: 'high',
+            } satisfies OpenAILanguageModelResponsesOptions,
+          },
+        } : {}),
+        onError({ error }) {
+          const message = error instanceof Error ? error.message : String(error);
+          event.sender.send('chat-stream-error', requestId, `Stream error: ${message}`);
+        },
+      });
+
+      for await (const part of result.fullStream) {
+        if (part.type === 'text-delta') {
+          collected += part.text;
+          event.sender.send('chat-stream-chunk', requestId, part.text);
+        }
+      }
+
+      // If response is empty, retry with exponential backoff
+      if (!collected.trim() && attempt < MAX_RETRIES) {
+        const delay = Math.pow(2, attempt) * 500; // 500ms, 1s, 2s
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+
+      activeAbortControllers.delete(requestId);
+      event.sender.send('chat-stream-done', requestId);
+      return;
+    } catch (err: unknown) {
+      if (abortController.signal.aborted) {
+        activeAbortControllers.delete(requestId);
+        event.sender.send('chat-stream-done', requestId);
+        return;
+      }
+      // On error, retry with exponential backoff
+      if (attempt < MAX_RETRIES) {
+        const delay = Math.pow(2, attempt) * 500;
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      activeAbortControllers.delete(requestId);
+      const message = err instanceof Error ? err.message : String(err);
+      event.sender.send('chat-stream-error', requestId, `Request failed: ${message}`);
+      return;
+    }
   }
 });
 

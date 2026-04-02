@@ -15,7 +15,15 @@
     "productName": "Pause",
     "mac": {
       "target": "dmg",
+      "icon": "build/icon.icns",
       "category": "public.app-category.productivity",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSCameraUsageDescription": "This app needs access to the camera for websites that request it.",
+        "NSMicrophoneUsageDescription": "This app needs access to the microphone for websites that request it.",
+        "NSScreenCaptureUsageDescription": "This app needs screen recording access for websites that request screen sharing."
+      },
       "protocols": [
         {
           "name": "HTTP",

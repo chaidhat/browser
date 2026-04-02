@@ -8,6 +8,7 @@ html, body, #root {
   margin: 0;
   padding: 0;
   overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 @custom-variant dark (&:where(.dark, .dark *));
@@ -100,7 +101,8 @@ html, body, #root {
   @apply border-l-[3px] border-neutral-300 dark:border-neutral-600 pl-2.5 my-1.5 text-neutral-500 dark:text-neutral-400;
 }
 .msg-assistant a {
-  @apply text-blue-600 dark:text-blue-400 no-underline hover:underline;
+  color: #007AFF;
+  @apply no-underline hover:underline;
 }
 .msg-assistant hr {
   @apply border-none border-t border-neutral-300 dark:border-neutral-700 my-2;
