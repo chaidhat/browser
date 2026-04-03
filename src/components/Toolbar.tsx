@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { FiChevronLeft, FiChevronRight, FiRefreshCw, FiMessageSquare, FiSettings, FiSidebar } from 'react-icons/fi';
+import { FiChevronLeft, FiChevronRight, FiRefreshCw, FiSidebar, FiPlus } from 'react-icons/fi';
 import { resolveUrl, isUrl } from '../utils/navigate';
 import { rankedDomains } from '../utils/rankedDomains';
 
@@ -25,19 +25,19 @@ interface Suggestion {
 interface Props {
   activeUrl: string;
   loading: boolean;
-  sidebarOpen: boolean;
   onNavigate: (url: string) => void;
   onSearch: (query: string) => void;
   onBack: () => void;
   onForward: () => void;
   onReload: () => void;
-  onToggleChat: () => void;
   onToggleTabSidebar: () => void;
   tabSidebarOpen: boolean;
   onOpenSettings: () => void;
   isChatTab?: boolean;
   allTabs?: TabInfo[];
   visitHistory?: HistoryEntry[];
+  onCreateTab: () => void;
+  hasTabBar?: boolean;
 }
 
 const btnClass = "w-8 h-8 border-none rounded-md bg-transparent text-neutral-500 dark:text-neutral-400 cursor-pointer flex items-center justify-center transition-colors hover:bg-black/6 dark:hover:bg-white/6 hover:text-black dark:hover:text-neutral-200 active:bg-black/10 dark:active:bg-white/12";
@@ -49,10 +49,10 @@ function splitUrl(url: string): { before: string; domain: string; after: string 
 }
 
 export function Toolbar({
-  activeUrl, loading, sidebarOpen,
+  activeUrl, loading,
   onNavigate, onSearch, onBack, onForward, onReload,
-  onToggleChat, onToggleTabSidebar, tabSidebarOpen, onOpenSettings, isChatTab,
-  allTabs = [], visitHistory = [],
+  onToggleTabSidebar, tabSidebarOpen, onOpenSettings, isChatTab,
+  allTabs = [], visitHistory = [], onCreateTab, hasTabBar,
 }: Props) {
   const [urlValue, setUrlValue] = useState(activeUrl);
   const [progressState, setProgressState] = useState<'idle' | 'loading' | 'completing'>('idle');
@@ -228,93 +228,96 @@ export function Toolbar({
   };
 
   return (
-    <div className={`relative flex items-center h-12 gap-2 bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700 drag pr-3 ${tabSidebarOpen ? 'pl-3' : 'pl-[88px]'}`} style={{ transition: 'padding-left 200ms ease-in-out' }}>
+    <div className={`relative flex items-center h-11 gap-2 bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700 drag pr-3 ${hasTabBar ? 'pl-3' : tabSidebarOpen ? 'pl-3' : 'pl-[88px]'}`} style={{ transition: 'padding-left 200ms ease-in-out' }}>
       <div className="flex gap-0.5 no-drag">
-        <button
-          className={`${btnClass} ${tabSidebarOpen ? 'bg-black/10 dark:bg-white/12 text-black dark:text-neutral-200' : ''}`}
-          title="Toggle Sidebar"
-          onClick={onToggleTabSidebar}
-        >
-          <FiSidebar size={15} />
-        </button>
-        <button className={btnClass} title="Back" onClick={onBack}>
-          <FiChevronLeft size={16} />
-        </button>
-        <button className={btnClass} title="Forward" onClick={onForward}>
-          <FiChevronRight size={16} />
-        </button>
-        <button className={btnClass} title="Reload" onClick={onReload}>
-          <FiRefreshCw size={14} />
-        </button>
-      </div>
-      <div className="flex-1 no-drag relative">
-        <input
-          ref={inputRef}
-          type="text"
-          className={`w-full h-8 px-3.5 border-none rounded-lg bg-neutral-100 dark:bg-neutral-900 text-[13px] outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500 ${isFocused ? 'text-black dark:text-neutral-200' : 'text-transparent'}`}
-          placeholder="Search or enter URL"
-          spellCheck={false}
-          autoComplete="off"
-          value={urlValue}
-          onChange={(e) => setUrlValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          onFocus={() => { setIsFocused(true); inputRef.current?.select(); }}
-          onBlur={() => { setIsFocused(false); setTimeout(() => setShowDropdown(false), 150); }}
-        />
-        {/* Inline ghost completion */}
-        {isFocused && ghostCompletion && (
-          <div className="absolute inset-0 flex items-center px-3.5 text-[13px] pointer-events-none truncate">
-            <span className="invisible">{urlValue}</span>
-            <span className="text-neutral-400 dark:text-neutral-500">{ghostCompletion.slice(urlValue.trim().length)}</span>
-          </div>
+        {!hasTabBar && (
+          <>
+            <button
+              className={`${btnClass} ${tabSidebarOpen ? 'bg-black/10 dark:bg-white/12 text-black dark:text-neutral-200' : ''}`}
+              title="Toggle Sidebar"
+              onClick={onToggleTabSidebar}
+            >
+              <FiSidebar size={15} />
+            </button>
+            <button className={btnClass} title="New Tab" onClick={onCreateTab}>
+              <FiPlus size={15} />
+            </button>
+          </>
         )}
-        {!isFocused && urlValue && (() => {
-          const parts = splitUrl(urlValue);
-          if (parts) {
+        {!isChatTab && (
+          <>
+            <button className={btnClass} title="Back" onClick={onBack}>
+              <FiChevronLeft size={16} />
+            </button>
+            <button className={btnClass} title="Forward" onClick={onForward}>
+              <FiChevronRight size={16} />
+            </button>
+            <button className={btnClass} title="Reload" onClick={onReload}>
+              <FiRefreshCw size={14} />
+            </button>
+          </>
+        )}
+      </div>
+      {!isChatTab && (
+        <div className="flex-1 no-drag relative">
+          <input
+            ref={inputRef}
+            type="text"
+            className={`w-full h-8 px-3.5 border-none rounded-lg bg-neutral-100 dark:bg-neutral-900 text-[13px] outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500 ${isFocused ? 'text-black dark:text-neutral-200' : 'text-transparent'}`}
+            placeholder="Search or enter URL"
+            spellCheck={false}
+            autoComplete="off"
+            value={urlValue}
+            onChange={(e) => setUrlValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onFocus={() => { setIsFocused(true); inputRef.current?.select(); }}
+            onBlur={() => { setIsFocused(false); setTimeout(() => setShowDropdown(false), 150); }}
+          />
+          {/* Inline ghost completion */}
+          {isFocused && ghostCompletion && (
+            <div className="absolute inset-0 flex items-center px-3.5 text-[13px] pointer-events-none truncate">
+              <span className="invisible">{urlValue}</span>
+              <span className="text-neutral-400 dark:text-neutral-500">{ghostCompletion.slice(urlValue.trim().length)}</span>
+            </div>
+          )}
+          {!isFocused && urlValue && (() => {
+            const parts = splitUrl(urlValue);
+            if (parts) {
+              return (
+                <div className="absolute inset-0 flex items-center px-3.5 text-[13px] pointer-events-none truncate">
+                  <span className="text-neutral-400 dark:text-neutral-500">{parts.before}</span>
+                  <span className="text-black dark:text-neutral-200">{parts.domain}</span>
+                  <span className="text-neutral-400 dark:text-neutral-500">{parts.after}</span>
+                </div>
+              );
+            }
             return (
-              <div className="absolute inset-0 flex items-center px-3.5 text-[13px] pointer-events-none truncate">
-                <span className="text-neutral-400 dark:text-neutral-500">{parts.before}</span>
-                <span className="text-black dark:text-neutral-200">{parts.domain}</span>
-                <span className="text-neutral-400 dark:text-neutral-500">{parts.after}</span>
+              <div className="absolute inset-0 flex items-center px-3.5 text-[13px] pointer-events-none truncate text-black dark:text-neutral-200">
+                {urlValue}
               </div>
             );
-          }
-          return (
-            <div className="absolute inset-0 flex items-center px-3.5 text-[13px] pointer-events-none truncate text-black dark:text-neutral-200">
-              {urlValue}
+          })()}
+          {showDropdown && (
+            <div className="absolute top-full left-0 right-0 z-50 mt-1 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-lg overflow-hidden">
+              {suggestions.map((s, i) => (
+                <div
+                  key={s.url}
+                  className={`px-3 py-1.5 text-[13px] cursor-pointer flex items-center gap-2 truncate ${
+                    i === selectedIndex
+                      ? 'bg-blue-500 text-white'
+                      : 'text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700'
+                  }`}
+                  onMouseDown={(e) => { e.preventDefault(); acceptSuggestion(s); }}
+                >
+                  <span className="truncate font-medium">{s.title || s.url}</span>
+                  {s.title && <span className={`truncate text-[11px] ${i === selectedIndex ? 'text-white/70' : 'text-neutral-400 dark:text-neutral-500'}`}>{s.url}</span>}
+                </div>
+              ))}
             </div>
-          );
-        })()}
-        {showDropdown && (
-          <div className="absolute top-full left-0 right-0 z-50 mt-1 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-lg overflow-hidden">
-            {suggestions.map((s, i) => (
-              <div
-                key={s.url}
-                className={`px-3 py-1.5 text-[13px] cursor-pointer flex items-center gap-2 truncate ${
-                  i === selectedIndex
-                    ? 'bg-blue-500 text-white'
-                    : 'text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700'
-                }`}
-                onMouseDown={(e) => { e.preventDefault(); acceptSuggestion(s); }}
-              >
-                <span className="truncate font-medium">{s.title || s.url}</span>
-                {s.title && <span className={`truncate text-[11px] ${i === selectedIndex ? 'text-white/70' : 'text-neutral-400 dark:text-neutral-500'}`}>{s.url}</span>}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-      <div className="flex gap-0.5 no-drag">
-        {!isChatTab && (
-          <button
-            className={`${btnClass} ${sidebarOpen ? 'bg-black/10 dark:bg-white/12 text-black dark:text-neutral-200' : ''}`}
-            title="AI Chat"
-            onClick={onToggleChat}
-          >
-            <FiMessageSquare size={16} />
-          </button>
-        )}
-      </div>
+          )}
+        </div>
+      )}
+      {isChatTab && <div className="flex-1" />}
       {/* Safari-style progress bar */}
       {progressState !== 'idle' && (
         <div className="absolute -bottom-[1px] left-0 right-0 h-[2px] overflow-hidden z-10">

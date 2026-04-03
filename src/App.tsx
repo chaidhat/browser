@@ -1,8 +1,8 @@
-import { useReducer, useState, useRef, useEffect, useCallback } from 'react';
-import { TabSidebar } from './components/TabSidebar';
+import { useReducer, useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { WorkspaceSidebar, Workspace } from './components/TabSidebar';
 import { Toolbar } from './components/Toolbar';
+import { HorizontalTabBar } from './components/HorizontalTabBar';
 import { WebviewContainer, WebviewContainerHandle, TabInfo } from './components/WebviewContainer';
-import { ChatSidebar } from './components/ChatSidebar';
 import { ChatView, DisplayMessage } from './components/ChatView';
 import { DownloadBar, DownloadItem } from './components/DownloadBar';
 import { FindBar } from './components/FindBar';
@@ -51,121 +51,265 @@ function playNotificationTone() {
   audio.play().finally(() => { setTimeout(() => URL.revokeObjectURL(url), 2000); });
 }
 
-interface TabState {
-  tabs: TabInfo[];
-  activeTabId: number;
+interface AppState {
+  workspaces: Workspace[];
+  activeWorkspaceId: number;
+  nextWorkspaceId: number;
   nextTabId: number;
 }
 
 type ChatHistories = Record<number, DisplayMessage[]>;
 
-type TabAction =
-  | { type: 'CREATE_TAB'; url?: string }
-  | { type: 'CLOSE_TAB'; id: number }
-  | { type: 'SWITCH_TAB'; id: number }
-  | { type: 'UPDATE_TAB'; id: number; title?: string; url?: string }
-  | { type: 'CONVERT_TAB'; id: number; url: string }
-  | { type: 'DUPLICATE_TAB'; id: number }
-  | { type: 'REORDER_TABS'; tabs: TabInfo[] }
-  | { type: 'RESTORE'; state: TabState };
+type AppAction =
+  | { type: 'CREATE_WORKSPACE'; url?: string }
+  | { type: 'CLOSE_WORKSPACE'; workspaceId: number }
+  | { type: 'SWITCH_WORKSPACE'; workspaceId: number }
+  | { type: 'REORDER_WORKSPACES'; workspaces: Workspace[] }
+  | { type: 'CREATE_TAB'; workspaceId?: number; url?: string }
+  | { type: 'CLOSE_TAB'; tabId: number }
+  | { type: 'SWITCH_TAB'; tabId: number }
+  | { type: 'UPDATE_TAB'; tabId: number; title?: string; url?: string }
+  | { type: 'CONVERT_TAB'; tabId: number; url: string }
+  | { type: 'DUPLICATE_TAB'; tabId: number }
+  | { type: 'RESTORE'; state: AppState };
 
-function tabReducer(state: TabState, action: TabAction): TabState {
+function findWorkspaceForTab(state: AppState, tabId: number): Workspace | undefined {
+  return state.workspaces.find(w => w.tabs.some(t => t.id === tabId));
+}
+
+function updateWorkspace(state: AppState, wsId: number, updater: (ws: Workspace) => Workspace): AppState {
+  return { ...state, workspaces: state.workspaces.map(w => w.id === wsId ? updater(w) : w) };
+}
+
+function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
-    case 'CREATE_TAB': {
-      const id = state.nextTabId;
+    case 'CREATE_WORKSPACE': {
+      const tabId = state.nextTabId;
+      const wsId = state.nextWorkspaceId;
       const hasUrl = !!action.url;
       const newTab: TabInfo = {
-        id,
+        id: tabId,
+        title: hasUrl ? 'New Tab' : 'New Chat',
+        url: action.url || '',
+        type: hasUrl ? 'page' : 'chat',
+      };
+      const newWs: Workspace = {
+        id: wsId,
+        name: '',
+        tabs: [newTab],
+        activeTabId: tabId,
+      };
+      return {
+        workspaces: [...state.workspaces, newWs],
+        activeWorkspaceId: wsId,
+        nextWorkspaceId: wsId + 1,
+        nextTabId: tabId + 1,
+      };
+    }
+
+    case 'CLOSE_WORKSPACE': {
+      const idx = state.workspaces.findIndex(w => w.id === action.workspaceId);
+      if (idx === -1) return state;
+
+      if (state.workspaces.length === 1) {
+        // Last workspace — create a fresh one
+        const tabId = state.nextTabId;
+        const wsId = state.nextWorkspaceId;
+        const newTab: TabInfo = { id: tabId, title: 'New Chat', url: '', type: 'chat' };
+        const newWs: Workspace = { id: wsId, name: '', tabs: [newTab], activeTabId: tabId };
+        return {
+          workspaces: [newWs],
+          activeWorkspaceId: wsId,
+          nextWorkspaceId: wsId + 1,
+          nextTabId: tabId + 1,
+        };
+      }
+
+      const newWorkspaces = state.workspaces.filter(w => w.id !== action.workspaceId);
+      let newActiveWsId = state.activeWorkspaceId;
+      if (state.activeWorkspaceId === action.workspaceId) {
+        const newIdx = idx >= newWorkspaces.length ? newWorkspaces.length - 1 : idx;
+        newActiveWsId = newWorkspaces[newIdx].id;
+      }
+      return { ...state, workspaces: newWorkspaces, activeWorkspaceId: newActiveWsId };
+    }
+
+    case 'SWITCH_WORKSPACE': {
+      if (!state.workspaces.find(w => w.id === action.workspaceId)) return state;
+      return { ...state, activeWorkspaceId: action.workspaceId };
+    }
+
+    case 'REORDER_WORKSPACES': {
+      return { ...state, workspaces: action.workspaces };
+    }
+
+    case 'CREATE_TAB': {
+      const wsId = action.workspaceId ?? state.activeWorkspaceId;
+      const ws = state.workspaces.find(w => w.id === wsId);
+      if (!ws) return state;
+      const tabId = state.nextTabId;
+      const hasUrl = !!action.url;
+      const newTab: TabInfo = {
+        id: tabId,
         title: hasUrl ? 'New Tab' : 'New Chat',
         url: action.url || '',
         type: hasUrl ? 'page' : 'chat',
       };
       return {
-        tabs: [...state.tabs, newTab],
-        activeTabId: id,
-        nextTabId: id + 1,
+        ...updateWorkspace(state, wsId, w => ({
+          ...w,
+          tabs: [...w.tabs, newTab],
+          activeTabId: tabId,
+        })),
+        nextTabId: tabId + 1,
       };
     }
-    case 'CLOSE_TAB': {
-      const idx = state.tabs.findIndex(t => t.id === action.id);
-      if (idx === -1) return state;
 
-      if (state.tabs.length === 1) {
-        const newId = state.nextTabId;
-        const newTab: TabInfo = { id: newId, title: 'New Chat', url: '', type: 'chat' };
+    case 'CLOSE_TAB': {
+      const ws = findWorkspaceForTab(state, action.tabId);
+      if (!ws) return state;
+
+      if (ws.tabs.length === 1) {
+        // Last tab in workspace — replace with a fresh chat
+        const tabId = state.nextTabId;
+        const newTab: TabInfo = { id: tabId, title: 'New Chat', url: '', type: 'chat' };
         return {
-          tabs: [newTab],
-          activeTabId: newId,
-          nextTabId: newId + 1,
+          ...updateWorkspace(state, ws.id, w => ({
+            ...w,
+            tabs: [newTab],
+            activeTabId: tabId,
+          })),
+          nextTabId: tabId + 1,
         };
       }
 
-      const newTabs = state.tabs.filter(t => t.id !== action.id);
-      let newActiveId = state.activeTabId;
-      if (state.activeTabId === action.id) {
+      const idx = ws.tabs.findIndex(t => t.id === action.tabId);
+      const newTabs = ws.tabs.filter(t => t.id !== action.tabId);
+      let newActiveTabId = ws.activeTabId;
+      if (ws.activeTabId === action.tabId) {
         const newIdx = idx >= newTabs.length ? newTabs.length - 1 : idx;
-        newActiveId = newTabs[newIdx].id;
+        newActiveTabId = newTabs[newIdx].id;
       }
-
-      return {
-        ...state,
+      return updateWorkspace(state, ws.id, w => ({
+        ...w,
         tabs: newTabs,
-        activeTabId: newActiveId,
+        activeTabId: newActiveTabId,
+      }));
+    }
+
+    case 'SWITCH_TAB': {
+      const ws = findWorkspaceForTab(state, action.tabId);
+      if (!ws) return state;
+      return {
+        ...updateWorkspace(state, ws.id, w => ({ ...w, activeTabId: action.tabId })),
+        activeWorkspaceId: ws.id,
       };
     }
-    case 'SWITCH_TAB': {
-      if (!state.tabs.find(t => t.id === action.id)) return state;
-      return { ...state, activeTabId: action.id };
-    }
+
     case 'UPDATE_TAB': {
-      return {
-        ...state,
-        tabs: state.tabs.map(t =>
-          t.id === action.id
+      const ws = findWorkspaceForTab(state, action.tabId);
+      if (!ws) return state;
+      return updateWorkspace(state, ws.id, w => ({
+        ...w,
+        tabs: w.tabs.map(t =>
+          t.id === action.tabId
             ? { ...t, ...(action.title !== undefined && { title: action.title }), ...(action.url !== undefined && { url: action.url }) }
             : t
         ),
-      };
+      }));
     }
+
     case 'CONVERT_TAB': {
-      return {
-        ...state,
-        tabs: state.tabs.map(t =>
-          t.id === action.id
+      const ws = findWorkspaceForTab(state, action.tabId);
+      if (!ws) return state;
+      return updateWorkspace(state, ws.id, w => ({
+        ...w,
+        tabs: w.tabs.map(t =>
+          t.id === action.tabId
             ? { ...t, type: 'page' as const, url: action.url, title: 'Loading...' }
             : t
         ),
-      };
+      }));
     }
+
     case 'DUPLICATE_TAB': {
-      const srcTab = state.tabs.find(t => t.id === action.id);
+      const ws = findWorkspaceForTab(state, action.tabId);
+      if (!ws) return state;
+      const srcTab = ws.tabs.find(t => t.id === action.tabId);
       if (!srcTab) return state;
       const newId = state.nextTabId;
       const newTab: TabInfo = { ...srcTab, id: newId };
-      const idx = state.tabs.findIndex(t => t.id === action.id);
-      const newTabs = [...state.tabs];
+      const idx = ws.tabs.findIndex(t => t.id === action.tabId);
+      const newTabs = [...ws.tabs];
       newTabs.splice(idx + 1, 0, newTab);
-      return { tabs: newTabs, activeTabId: newId, nextTabId: newId + 1 };
+      return {
+        ...updateWorkspace(state, ws.id, w => ({
+          ...w,
+          tabs: newTabs,
+          activeTabId: newId,
+        })),
+        nextTabId: newId + 1,
+      };
     }
-    case 'REORDER_TABS': {
-      return { ...state, tabs: action.tabs };
-    }
+
     case 'RESTORE': {
       return action.state;
     }
+
     default:
       return state;
   }
 }
 
+// Migrate old flat tab format to workspace format
+function migrateLoadedState(saved: any): { state: AppState; chatHistories: ChatHistories; favicons: Record<number, string> } | null {
+  if (!saved) return null;
+
+  // New format
+  if (saved.workspaces?.length) {
+    return {
+      state: {
+        workspaces: saved.workspaces,
+        activeWorkspaceId: saved.activeWorkspaceId,
+        nextWorkspaceId: saved.nextWorkspaceId,
+        nextTabId: saved.nextTabId,
+      },
+      chatHistories: saved.chatHistories || {},
+      favicons: saved.favicons || {},
+    };
+  }
+
+  // Old format: flat tabs array
+  if (saved.tabs?.length) {
+    const ws: Workspace = {
+      id: 1,
+      name: '',
+      tabs: saved.tabs,
+      activeTabId: saved.activeTabId,
+    };
+    return {
+      state: {
+        workspaces: [ws],
+        activeWorkspaceId: 1,
+        nextWorkspaceId: 2,
+        nextTabId: saved.nextTabId,
+      },
+      chatHistories: saved.chatHistories || {},
+      favicons: saved.favicons || {},
+    };
+  }
+
+  return null;
+}
+
 export default function App() {
-  const [tabState, dispatch] = useReducer(tabReducer, {
-    tabs: [],
-    activeTabId: -1,
+  const [appState, dispatch] = useReducer(appReducer, {
+    workspaces: [],
+    activeWorkspaceId: -1,
+    nextWorkspaceId: 0,
     nextTabId: 0,
   });
 
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [tabSidebarOpen, setTabSidebarOpen] = useState(true);
   const openSettings = useCallback(() => window.browser.openSettings(), []);
   const [font, setFont] = useState<'geist' | 'pt-serif'>('pt-serif');
@@ -183,10 +327,14 @@ export default function App() {
 
   const webviewRef = useRef<WebviewContainerHandle>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
-  const activeTabIdRef = useRef(tabState.activeTabId);
-  activeTabIdRef.current = tabState.activeTabId;
 
-  const activeTab = tabState.tabs.find(t => t.id === tabState.activeTabId);
+  // Derived values
+  const activeWorkspace = appState.workspaces.find(w => w.id === appState.activeWorkspaceId);
+  const activeTab = activeWorkspace?.tabs.find(t => t.id === activeWorkspace.activeTabId);
+  const allTabs = useMemo(() => appState.workspaces.flatMap(w => w.tabs), [appState.workspaces]);
+
+  const activeTabIdRef = useRef(activeTab?.id ?? -1);
+  activeTabIdRef.current = activeTab?.id ?? -1;
 
   useEffect(() => {
     if (activeTab) {
@@ -202,19 +350,14 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const saved = await window.browser.loadTabs() as {
-        tabs: TabInfo[];
-        activeTabId: number;
-        nextTabId: number;
-        chatHistories: ChatHistories;
-        favicons?: Record<number, string>;
-      } | null;
-      if (saved?.tabs?.length) {
-        dispatch({ type: 'RESTORE', state: { tabs: saved.tabs, activeTabId: saved.activeTabId, nextTabId: saved.nextTabId } });
-        setChatHistories(saved.chatHistories || {});
-        if (saved.favicons) setFavicons(saved.favicons);
+      const saved = await window.browser.loadTabs();
+      const migrated = migrateLoadedState(saved);
+      if (migrated) {
+        dispatch({ type: 'RESTORE', state: migrated.state });
+        setChatHistories(migrated.chatHistories);
+        setFavicons(migrated.favicons);
       } else {
-        dispatch({ type: 'CREATE_TAB' });
+        dispatch({ type: 'CREATE_WORKSPACE' });
       }
       const savedHistory = await window.browser.loadHistory();
       if (savedHistory?.length) setVisitHistory(savedHistory);
@@ -237,14 +380,15 @@ export default function App() {
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(() => {
       window.browser.saveTabs({
-        tabs: tabState.tabs,
-        activeTabId: tabState.activeTabId,
-        nextTabId: tabState.nextTabId,
+        workspaces: appState.workspaces,
+        activeWorkspaceId: appState.activeWorkspaceId,
+        nextWorkspaceId: appState.nextWorkspaceId,
+        nextTabId: appState.nextTabId,
         chatHistories,
         favicons,
       });
     }, 500);
-  }, [tabState, chatHistories, favicons, initialized]);
+  }, [appState, chatHistories, favicons, initialized]);
 
   const historySaveRef = useRef<ReturnType<typeof setTimeout>>();
   useEffect(() => {
@@ -255,17 +399,32 @@ export default function App() {
     }, 2000);
   }, [visitHistory, initialized]);
 
-  const handleCloseTab = useCallback((id: number) => {
-    dispatch({ type: 'CLOSE_TAB', id });
+  const handleCloseTab = useCallback((tabId: number) => {
+    dispatch({ type: 'CLOSE_TAB', tabId });
     setChatHistories(prev => {
       const next = { ...prev };
-      delete next[id];
+      delete next[tabId];
       return next;
     });
   }, []);
 
+  const handleCloseWorkspace = useCallback((workspaceId: number) => {
+    const ws = appState.workspaces.find(w => w.id === workspaceId);
+    if (ws) {
+      // Clean up chat histories for all tabs in the workspace
+      setChatHistories(prev => {
+        const next = { ...prev };
+        for (const tab of ws.tabs) {
+          delete next[tab.id];
+        }
+        return next;
+      });
+    }
+    dispatch({ type: 'CLOSE_WORKSPACE', workspaceId });
+  }, [appState.workspaces]);
+
   const handleTabUpdate = useCallback((id: number, updates: { title?: string; url?: string }) => {
-    dispatch({ type: 'UPDATE_TAB', id, ...updates });
+    dispatch({ type: 'UPDATE_TAB', tabId: id, ...updates });
     if (updates.url && updates.url !== 'about:blank' && !updates.url.startsWith('data:')) {
       setVisitHistory(prev => {
         const existing = prev.find(h => h.url === updates.url);
@@ -281,12 +440,12 @@ export default function App() {
     }
     if (updates.title && !updates.url) {
       setVisitHistory(prev => {
-        const tab = tabState.tabs.find(t => t.id === id);
+        const tab = allTabs.find(t => t.id === id);
         if (!tab?.url) return prev;
         return prev.map(h => h.url === tab.url ? { ...h, title: updates.title! } : h);
       });
     }
-  }, [tabState.tabs]);
+  }, [allTabs]);
 
   const handleLoadingChange = useCallback((tabId: number, isLoading: boolean) => {
     setLoadingTabs(prev => ({ ...prev, [tabId]: isLoading }));
@@ -301,7 +460,7 @@ export default function App() {
   }, []);
 
   const handleChatTitleChange = useCallback((tabId: number, title: string) => {
-    dispatch({ type: 'UPDATE_TAB', id: tabId, title });
+    dispatch({ type: 'UPDATE_TAB', tabId, title });
   }, []);
 
   const handleThinkingChange = useCallback((tabId: number, thinking: boolean) => {
@@ -376,25 +535,45 @@ export default function App() {
         dispatch({ type: 'CREATE_TAB' });
       } else if (e.metaKey && e.key === 'w') {
         e.preventDefault();
-        if (tabState.activeTabId !== -1) {
-          handleCloseTab(tabState.activeTabId);
+        if (activeTab) {
+          handleCloseTab(activeTab.id);
         }
       } else if (e.metaKey && e.key === 'f') {
         e.preventDefault();
         setFindOpen(prev => !prev);
       } else if (e.metaKey && e.altKey && e.key === 'ArrowUp') {
+        // Switch to previous workspace
         e.preventDefault();
-        const idx = tabState.tabs.findIndex(t => t.id === tabState.activeTabId);
+        const idx = appState.workspaces.findIndex(w => w.id === appState.activeWorkspaceId);
         if (idx > 0) {
-          dispatch({ type: 'SWITCH_TAB', id: tabState.tabs[idx - 1].id });
-          setUnreadTabs(prev => ({ ...prev, [tabState.tabs[idx - 1].id]: false }));
+          dispatch({ type: 'SWITCH_WORKSPACE', workspaceId: appState.workspaces[idx - 1].id });
         }
       } else if (e.metaKey && e.altKey && e.key === 'ArrowDown') {
+        // Switch to next workspace
         e.preventDefault();
-        const idx = tabState.tabs.findIndex(t => t.id === tabState.activeTabId);
-        if (idx < tabState.tabs.length - 1) {
-          dispatch({ type: 'SWITCH_TAB', id: tabState.tabs[idx + 1].id });
-          setUnreadTabs(prev => ({ ...prev, [tabState.tabs[idx + 1].id]: false }));
+        const idx = appState.workspaces.findIndex(w => w.id === appState.activeWorkspaceId);
+        if (idx < appState.workspaces.length - 1) {
+          dispatch({ type: 'SWITCH_WORKSPACE', workspaceId: appState.workspaces[idx + 1].id });
+        }
+      } else if (e.metaKey && e.shiftKey && (e.key === '[' || e.key === '{')) {
+        // Switch to previous tab in workspace
+        e.preventDefault();
+        if (activeWorkspace && activeWorkspace.tabs.length > 1) {
+          const idx = activeWorkspace.tabs.findIndex(t => t.id === activeWorkspace.activeTabId);
+          if (idx > 0) {
+            dispatch({ type: 'SWITCH_TAB', tabId: activeWorkspace.tabs[idx - 1].id });
+            setUnreadTabs(prev => ({ ...prev, [activeWorkspace.tabs[idx - 1].id]: false }));
+          }
+        }
+      } else if (e.metaKey && e.shiftKey && (e.key === ']' || e.key === '}')) {
+        // Switch to next tab in workspace
+        e.preventDefault();
+        if (activeWorkspace && activeWorkspace.tabs.length > 1) {
+          const idx = activeWorkspace.tabs.findIndex(t => t.id === activeWorkspace.activeTabId);
+          if (idx < activeWorkspace.tabs.length - 1) {
+            dispatch({ type: 'SWITCH_TAB', tabId: activeWorkspace.tabs[idx + 1].id });
+            setUnreadTabs(prev => ({ ...prev, [activeWorkspace.tabs[idx + 1].id]: false }));
+          }
         }
       } else if (e.key === 'Escape' && findOpen) {
         setFindOpen(false);
@@ -402,7 +581,7 @@ export default function App() {
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [tabState.activeTabId, handleCloseTab, activeTab?.type, findOpen]);
+  }, [appState.activeWorkspaceId, appState.workspaces, activeWorkspace, activeTab, handleCloseTab, findOpen]);
 
   useEffect(() => {
     setFindOpen(false);
@@ -517,7 +696,7 @@ export default function App() {
 
   const handleNavigate = useCallback((url: string) => {
     if (activeTab?.type === 'chat') {
-      dispatch({ type: 'CONVERT_TAB', id: activeTab.id, url });
+      dispatch({ type: 'CONVERT_TAB', tabId: activeTab.id, url });
     } else {
       webviewRef.current?.loadURL(url);
     }
@@ -529,54 +708,69 @@ export default function App() {
       setInitialQueries(prev => ({ ...prev, [activeTab.id]: query }));
     } else {
       // We need to create a new chat tab and set its initial query
-      // The tab ID will be tabState.nextTabId
-      const newTabId = tabState.nextTabId;
+      const newTabId = appState.nextTabId;
       dispatch({ type: 'CREATE_TAB' });
       setInitialQueries(prev => ({ ...prev, [newTabId]: query }));
     }
-  }, [activeTab?.type, activeTab?.id, chatHistories, tabState.nextTabId]);
+  }, [activeTab?.type, activeTab?.id, chatHistories, appState.nextTabId]);
 
   const isChat = activeTab?.type === 'chat';
 
   return (
     <div className="flex h-full w-full">
       <div className={`shrink-0 overflow-hidden transition-[width] duration-200 ease-in-out ${tabSidebarOpen ? 'w-[200px]' : 'w-0'}`}>
-      <TabSidebar
-        tabs={tabState.tabs}
-        activeTabId={tabState.activeTabId}
+      <WorkspaceSidebar
+        workspaces={appState.workspaces}
+        activeWorkspaceId={appState.activeWorkspaceId}
         loadingTabs={loadingTabs}
         favicons={favicons}
         thinkingTabs={thinkingTabs}
         unreadTabs={unreadTabs}
-        onSwitch={(id) => {
-          dispatch({ type: 'SWITCH_TAB', id });
-          setUnreadTabs(prev => ({ ...prev, [id]: false }));
+        onSwitch={(wsId) => {
+          dispatch({ type: 'SWITCH_WORKSPACE', workspaceId: wsId });
         }}
-        onClose={handleCloseTab}
-        onCreate={() => dispatch({ type: 'CREATE_TAB' })}
-        onDuplicate={(id) => dispatch({ type: 'DUPLICATE_TAB', id })}
-        onReorder={(tabs) => dispatch({ type: 'REORDER_TABS', tabs })}
+        onClose={handleCloseWorkspace}
+        onCreate={() => dispatch({ type: 'CREATE_WORKSPACE' })}
+        onReorder={(workspaces) => dispatch({ type: 'REORDER_WORKSPACES', workspaces })}
         onOpenSettings={openSettings}
       />
       </div>
       <div className="flex-1 flex flex-col min-w-0 h-full bg-white dark:bg-[#111]">
-        {!isChat && (
+        {activeWorkspace && activeWorkspace.tabs.length >= 2 && (
+          <HorizontalTabBar
+            tabs={activeWorkspace.tabs}
+            activeTabId={activeWorkspace.activeTabId}
+            loadingTabs={loadingTabs}
+            favicons={favicons}
+            thinkingTabs={thinkingTabs}
+            unreadTabs={unreadTabs}
+            onSwitch={(tabId) => {
+              dispatch({ type: 'SWITCH_TAB', tabId });
+              setUnreadTabs(prev => ({ ...prev, [tabId]: false }));
+            }}
+            onClose={handleCloseTab}
+            onToggleTabSidebar={() => setTabSidebarOpen(prev => !prev)}
+            tabSidebarOpen={tabSidebarOpen}
+            onCreateTab={() => dispatch({ type: 'CREATE_TAB' })}
+          />
+        )}
+        {!(isChat && activeWorkspace && activeWorkspace.tabs.length >= 2) && (
           <Toolbar
             activeUrl={activeTab?.url || ''}
             loading={activeTab ? !!loadingTabs[activeTab.id] : false}
-            sidebarOpen={sidebarOpen}
             onNavigate={handleNavigate}
             onSearch={handleSearch}
             onBack={() => webviewRef.current?.goBack()}
             onForward={() => webviewRef.current?.goForward()}
             onReload={() => webviewRef.current?.reload()}
-            onToggleChat={() => setSidebarOpen(prev => !prev)}
             onToggleTabSidebar={() => setTabSidebarOpen(prev => !prev)}
             tabSidebarOpen={tabSidebarOpen}
             onOpenSettings={openSettings}
             isChatTab={isChat}
-            allTabs={tabState.tabs}
+            allTabs={allTabs}
             visitHistory={visitHistory}
+            onCreateTab={() => dispatch({ type: 'CREATE_TAB' })}
+            hasTabBar={!!activeWorkspace && activeWorkspace.tabs.length >= 2}
           />
         )}
         <div className="flex flex-1 min-h-0 relative">
@@ -588,16 +782,16 @@ export default function App() {
               activeMatch={findMatches.active}
             />
           )}
-          {tabState.tabs.filter(t => t.type === 'chat').map(tab => (
+          {allTabs.filter(t => t.type === 'chat').map(tab => (
             <ChatView
               key={tab.id}
               tabId={tab.id}
               tabTitle={tab.title}
-              hidden={tab.id !== tabState.activeTabId}
+              hidden={tab.id !== activeTab?.id}
               messages={chatHistories[tab.id] || []}
               onMessagesChange={handleChatMessagesChange}
               onTitleChange={handleChatTitleChange}
-              onNavigate={(url) => dispatch({ type: 'CONVERT_TAB', id: tab.id, url })}
+              onNavigate={(url) => dispatch({ type: 'CONVERT_TAB', tabId: tab.id, url })}
               onOpenLink={(url) => dispatch({ type: 'CREATE_TAB', url })}
               onThinkingChange={handleThinkingChange}
               initialQuery={initialQueries[tab.id]}
@@ -607,14 +801,13 @@ export default function App() {
           ))}
           <WebviewContainer
             ref={webviewRef}
-            tabs={tabState.tabs}
-            activeTabId={tabState.activeTabId}
+            tabs={allTabs}
+            activeTabId={activeTab?.id ?? -1}
             onTabUpdate={handleTabUpdate}
             onLoadingChange={handleLoadingChange}
             onFaviconChange={handleFaviconChange}
             hidden={isChat}
           />
-          {!isChat && <ChatSidebar open={sidebarOpen} />}
         </div>
         <DownloadBar
           downloads={downloads}

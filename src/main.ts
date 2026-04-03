@@ -72,7 +72,7 @@ function openSettingsWindow(): void {
     minimizable: false,
     maximizable: false,
     titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 17, y: 17 },
+    trafficLightPosition: { x: 14, y: 14 },
     transparent: true,
     vibrancy: 'sidebar',
     webPreferences: {
@@ -113,7 +113,7 @@ function createWindow(): void {
     width: 1280,
     height: 900,
     titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 17, y: 17 },
+    trafficLightPosition: { x: 14, y: 14 },
     transparent: true,
     vibrancy: 'sidebar',
     webPreferences: {
