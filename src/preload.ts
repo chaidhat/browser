@@ -28,6 +28,7 @@ export interface Settings {
   serperKey: string;
   emailAccounts: EmailAccount[];
   font: 'inter' | 'pt-serif';
+  theme: 'light' | 'sunset' | 'dark' | 'system';
 }
 
 export interface SerperResult {
@@ -82,6 +83,10 @@ export interface BrowserAPI {
   autocompleteSuggest: (query: string) => Promise<string | null>;
   getSettings: () => Promise<Settings>;
   saveSettings: (settings: Settings) => Promise<boolean>;
+  setTheme: (theme: Settings['theme']) => Promise<boolean>;
+  openSettings: () => Promise<boolean>;
+  closeWindow: () => Promise<boolean>;
+  onSettingsChanged: (callback: () => void) => void;
   loadTabs: () => Promise<unknown>;
   saveTabs: (data: unknown) => Promise<boolean>;
   loadHistory: () => Promise<HistoryEntry[]>;
@@ -141,6 +146,12 @@ contextBridge.exposeInMainWorld('browser', {
   autocompleteSuggest: (query: string) => ipcRenderer.invoke('autocomplete-suggest', query),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings: Settings) => ipcRenderer.invoke('save-settings', settings),
+  setTheme: (theme: Settings['theme']) => ipcRenderer.invoke('set-theme', theme),
+  openSettings: () => ipcRenderer.invoke('open-settings'),
+  closeWindow: () => ipcRenderer.invoke('close-window'),
+  onSettingsChanged: (callback: () => void) => {
+    ipcRenderer.on('settings-changed', () => callback());
+  },
   loadTabs: () => ipcRenderer.invoke('load-tabs'),
   saveTabs: (data: unknown) => ipcRenderer.invoke('save-tabs', data),
   loadHistory: () => ipcRenderer.invoke('load-history'),

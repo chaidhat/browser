@@ -13,6 +13,22 @@ html, body, #root {
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* Sunset theme — warm sepia tint layered on top of dark mode */
+html.sunset {
+  --sunset-bg: #1a1410;
+  --sunset-surface: #231d16;
+  --sunset-border: rgba(255, 200, 120, 0.08);
+  --sunset-text: #e8d5c0;
+  --sunset-text-muted: #a08870;
+}
+.sunset .dark\:bg-\[\#111\] { background-color: var(--sunset-bg) !important; }
+.sunset .dark\:bg-neutral-800 { background-color: var(--sunset-surface) !important; }
+.sunset .dark\:bg-neutral-800\/50 { background-color: color-mix(in srgb, var(--sunset-surface) 50%, transparent) !important; }
+.sunset .dark\:text-neutral-200 { color: var(--sunset-text) !important; }
+.sunset .dark\:text-neutral-400 { color: var(--sunset-text-muted) !important; }
+.sunset .dark\:border-neutral-700 { border-color: var(--sunset-border) !important; }
+.sunset .dark\:border-white\/8 { border-color: var(--sunset-border) !important; }
+
 /* Shimmer animation */
 @keyframes shimmer {
   0% { background-position: 100% 0; }

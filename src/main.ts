@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 
 app.name = 'Pause';
-nativeTheme.themeSource = 'system';
+// Theme is applied after settings are loaded (see app.whenReady)
 
 if (app.isPackaged) {
   app.setAsDefaultProtocolClient('http');
@@ -26,18 +26,26 @@ interface Settings {
   serperKey: string;
   emailAccounts: EmailAccount[];
   font: 'inter' | 'pt-serif';
+  theme: 'light' | 'sunset' | 'dark' | 'system';
 }
 
 const settingsPath = path.join(app.getPath('userData'), 'settings.json');
 const tabsPath = path.join(app.getPath('userData'), 'tabs.json');
 const historyPath = path.join(app.getPath('userData'), 'history.json');
 
+const settingsDefaults: Settings = { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', emailAccounts: [], font: 'pt-serif', theme: 'system' };
+
+function applyTheme(theme: Settings['theme']): void {
+  // 'sunset' is treated as dark at the OS level; the renderer handles the warm tint
+  nativeTheme.themeSource = theme === 'sunset' ? 'dark' : theme;
+}
+
 function loadSettings(): Settings {
   try {
     const data = fs.readFileSync(settingsPath, 'utf-8');
-    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', emailAccounts: [], font: 'pt-serif', ...JSON.parse(data) };
+    return { ...settingsDefaults, ...JSON.parse(data) };
   } catch {
-    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', emailAccounts: [], font: 'pt-serif' };
+    return { ...settingsDefaults };
   }
 }
 
@@ -46,6 +54,43 @@ function saveSettings(settings: Settings): void {
 }
 
 let mainWindow: BrowserWindow | null = null;
+let settingsWindow: BrowserWindow | null = null;
+
+function openSettingsWindow(): void {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.focus();
+    return;
+  }
+
+  settingsWindow = new BrowserWindow({
+    width: 720,
+    height: 520,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 17, y: 17 },
+    transparent: true,
+    vibrancy: 'sidebar',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+    parent: mainWindow || undefined,
+  });
+
+  const indexPath = path.join(__dirname, '..', 'ui', 'index.html');
+  settingsWindow.loadFile(indexPath, { query: { settings: '1' } });
+
+  settingsWindow.on('closed', () => {
+    settingsWindow = null;
+    // Notify main window to reload settings (e.g. font change)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('settings-changed');
+    }
+  });
+}
 
 function updateAppIcon(): void {
   if (process.platform !== 'darwin' || !mainWindow) return;
@@ -271,6 +316,23 @@ ipcMain.handle('get-settings', () => {
 
 ipcMain.handle('save-settings', (_event, settings: Settings) => {
   saveSettings(settings);
+  applyTheme(settings.theme);
+  return true;
+});
+
+ipcMain.handle('set-theme', (_event, theme: Settings['theme']) => {
+  applyTheme(theme);
+  return true;
+});
+
+ipcMain.handle('open-settings', () => {
+  openSettingsWindow();
+  return true;
+});
+
+ipcMain.handle('close-window', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win && win !== mainWindow) win.close();
   return true;
 });
 
@@ -777,11 +839,15 @@ ipcMain.handle('chat-generate-title', async (_event, userMessage: string) => {
 });
 
 app.whenReady().then(() => {
+  applyTheme(loadSettings().theme);
+
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: 'Pause',
       submenu: [
         { role: 'about' },
+        { type: 'separator' },
+        { label: 'Preferences…', accelerator: 'CmdOrCtrl+,', click: () => openSettingsWindow() },
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
