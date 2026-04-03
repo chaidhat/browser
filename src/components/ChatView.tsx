@@ -1,12 +1,19 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { IoClose } from 'react-icons/io5';
-import { FiArrowUp, FiArrowRight, FiCopy, FiCheck, FiSquare, FiEdit2, FiRefreshCw } from 'react-icons/fi';
+import { FiArrowUp, FiArrowRight, FiChevronDown, FiCopy, FiCheck, FiSquare, FiEdit2, FiRefreshCw, FiExternalLink } from 'react-icons/fi';
 import { renderContent } from '../utils/renderContent';
 import type { ChatMessage, ChatContentBlock, SerperResult, SerperImageResult, HistoryEntry, ToolCallInfo } from '../preload';
 import logoLight from '../assets/logo.png';
 import logoDark from '../assets/logo-dark.png';
 import { rankedDomains } from '../utils/rankedDomains';
 import { buildCustomToolsPromptText } from '../customTools';
+
+const MODELS = [
+  { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', keyField: 'openaiKey' as const },
+  { id: 'gpt-5.4', label: 'GPT-5.4', keyField: 'openaiKey' as const },
+  { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', keyField: 'anthropicKey' as const },
+  { id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro', keyField: 'googleKey' as const },
+];
 
 export interface ToolCallDisplay {
   toolCallId: string;
@@ -89,14 +96,39 @@ function CopyButton({ text, className = '' }: { text: string; className?: string
 }
 
 function RetryButton({ index, onRetry }: { index: number; onRetry: (idx: number, modelId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
   return (
-    <button
-      onClick={() => onRetry(index, 'gpt-5.4')}
-      className="border-none bg-transparent cursor-pointer p-1 rounded transition-colors text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
-      title="Retry"
-    >
-      <FiRefreshCw size={14} />
-    </button>
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(prev => !prev)}
+        className="border-none bg-transparent cursor-pointer p-1 rounded transition-colors text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
+        title="Retry with different model"
+      >
+        <FiRefreshCw size={14} />
+      </button>
+      {open && (
+        <div className="absolute bottom-full left-0 mb-1 z-50 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-lg overflow-hidden">
+          {MODELS.map(m => (
+            <button
+              key={m.id}
+              onClick={() => { setOpen(false); onRetry(index, m.id); }}
+              className="block w-full text-left px-3 py-1.5 border-none bg-transparent cursor-pointer text-[12px] text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700 transition-colors whitespace-nowrap"
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -115,7 +147,7 @@ function ToolCallRow({ toolCall }: { toolCall: ToolCallDisplay }) {
         onClick={() => setExpanded(!expanded)}
       >
         <span className={`text-[9px] transition-transform inline-block ${expanded ? 'rotate-90' : ''}`}>&#9654;</span>
-        <span>tool call <span className="font-medium text-neutral-500 dark:text-neutral-400">{toolCall.toolName}</span></span>
+        <span>tool call <span className="text-neutral-500 dark:text-neutral-400">{toolCall.toolName}</span></span>
         {toolCall.status === 'running' && (
           <span
             className="ml-1 inline-block h-[0.8em] w-[0.8em] animate-spin rounded-full border-[1.5px] border-current border-t-transparent align-[-0.08em] opacity-70"
@@ -125,7 +157,7 @@ function ToolCallRow({ toolCall }: { toolCall: ToolCallDisplay }) {
         {toolCall.status === 'error' && <span className="text-red-400 ml-0.5">failed</span>}
       </div>
       {expanded && (
-        <div className="ml-4 mt-1 p-2 rounded-md bg-neutral-100 dark:bg-neutral-800 text-[15px] leading-relaxed font-mono max-h-[200px] overflow-auto whitespace-pre-wrap">
+        <div className="ml-4 mt-1 p-2 rounded-md bg-neutral-100 dark:bg-neutral-800 text-[13px] leading-relaxed font-mono max-h-[200px] overflow-auto whitespace-pre-wrap">
           <div className="text-neutral-500 dark:text-neutral-400">args: {JSON.stringify(toolCall.toolArgs, null, 2)}</div>
           {toolCall.result != null && (
             <div className="mt-1.5 pt-1.5 text-neutral-400 dark:text-neutral-500 border-t border-neutral-200 dark:border-neutral-700">
@@ -227,6 +259,8 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   const [pendingImages, setPendingImages] = useState<string[]>([]);
   const [pendingPdfs, setPendingPdfs] = useState<PdfAttachment[]>([]);
   const [thinkingSeconds, setThinkingSeconds] = useState(0);
+  const [selectedModel, setSelectedModel] = useState('gpt-5.4-mini');
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [pendingToolCalls, setPendingToolCalls] = useState<ToolCallDisplay[]>([]);
   const pendingToolCallsRef = useRef<ToolCallDisplay[]>([]);
   const pendingSearchResultsRef = useRef<SearchResults | undefined>(undefined);
@@ -244,6 +278,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   const cleanupRef = useRef<(() => void) | null>(null);
   const currentRequestIdRef = useRef<string | null>(null);
   const thinkingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
 
   const acSuggestions = useMemo(() => {
     if (messages.length > 0) return [];
@@ -374,6 +409,17 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   }, [hidden]);
 
   useEffect(() => {
+    if (!modelMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
+        setModelMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [modelMenuOpen]);
+
+  useEffect(() => {
     if (initialQuery) {
       onInitialQueryConsumed?.(tabId);
       sendChat(initialQuery);
@@ -456,6 +502,8 @@ ${customToolsPromptText}
 After tools execute, you will receive a message with {"toolResults": [{tool, result}]}. Use these results to formulate your final response (Option A) or call more tools (Option B).
 
 You should default to calling the search tool first. If the user is asking for information, current facts, recommendations, research, or anything that benefits from web results, your first response should usually be Option B with a search tool call.
+
+When searching, ALWAYS call at least 3 search tool calls in parallel with different queries to get comprehensive results. For example, if the user asks "best laptops for programming", you should search for "best laptops for programming 2026", "best developer laptops reviews", and "programming laptop recommendations specs" all in one Option B response. Vary the phrasing and angle of each query to maximize coverage.
 
 Do not send Option A until you have already used the search tool, unless the user is clearly asking for something that does not need web results.
 
@@ -560,20 +608,21 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
         pendingSearchResultsRef.current = undefined;
         cleanupRef.current = null;
       },
-    });
-  }, [inputValue, pendingImages, pendingPdfs, messages, tabId, tabTitle, onMessagesChange, onTitleChange, onThinkingChange]);
+    }, selectedModel);
+  }, [inputValue, pendingImages, pendingPdfs, messages, tabId, tabTitle, selectedModel, onMessagesChange, onTitleChange, onThinkingChange]);
 
-  const retryRef = useRef<{ assistantIndex: number } | null>(null);
+  const retryRef = useRef<{ assistantIndex: number; modelId: string } | null>(null);
 
-  const retryWithModel = useCallback((assistantIndex: number, _modelId: string) => {
+  const retryWithModel = useCallback((assistantIndex: number, modelId: string) => {
     const userIdx = assistantIndex - 1;
     if (userIdx < 0 || messages[userIdx]?.role !== 'user') return;
     const userMsg = messages[userIdx];
     setEditingIndex(userIdx);
+    setSelectedModel(modelId);
     setInputValue(userMsg.content);
     if (userMsg.images) setPendingImages(userMsg.images);
     if (userMsg.pdfs) setPendingPdfs(userMsg.pdfs);
-    retryRef.current = { assistantIndex };
+    retryRef.current = { assistantIndex, modelId };
   }, [messages]);
 
   // Auto-send when retry is queued
@@ -816,7 +865,7 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
                         href={r.link}
                         className="flex flex-col gap-0.5 px-3 py-2 hover:bg-neutral-100 dark:hover:bg-neutral-700/50 transition-colors cursor-pointer border-b border-neutral-100 dark:border-neutral-700/50 last:border-b-0 no-underline"
                       >
-                        <span className="text-[15px] font-medium truncate" style={{ color: '#007AFF' }}>{r.title}</span>
+                        <span className="text-[15px] font-medium truncate flex items-center gap-1" style={{ color: '#007AFF' }}><span className="underline truncate">{r.title}</span><FiExternalLink size={12} className="shrink-0" /></span>
                         <span className="text-[15px] text-neutral-500 dark:text-neutral-400 line-clamp-1" >{r.snippet}</span>
                       </a>
                     ))}
@@ -957,7 +1006,37 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
             </button>
           )}
         </div>
-        <div className="pb-2" />
+        <div className="flex items-center pb-4 no-drag self-start relative z-10">
+          <div className="relative" ref={modelMenuRef}>
+            <button
+              className="h-7 px-2.5 border-none rounded-lg bg-transparent text-[11px] font-medium text-neutral-400 dark:text-neutral-500 cursor-pointer flex items-center gap-1 transition-colors hover:text-neutral-600 dark:hover:text-neutral-300 whitespace-nowrap"
+              onClick={() => setModelMenuOpen(prev => !prev)}
+            >
+              {MODELS.find(m => m.id === selectedModel)?.label}
+              <FiChevronDown size={11} />
+            </button>
+            {modelMenuOpen && (
+              <div className="absolute bottom-full left-0 mb-1 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-lg overflow-hidden z-50 min-w-[160px] no-drag">
+                {MODELS.map(m => (
+                  <button
+                    key={m.id}
+                    className={`w-full text-left px-3 py-2 text-[12px] border-none cursor-pointer transition-colors ${
+                      m.id === selectedModel
+                        ? 'bg-neutral-100 dark:bg-neutral-700 text-black dark:text-neutral-200 font-medium'
+                        : 'bg-transparent text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700/50'
+                    }`}
+                    onClick={() => {
+                      setSelectedModel(m.id);
+                      setModelMenuOpen(false);
+                    }}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
       {lightboxImage && (
         <div

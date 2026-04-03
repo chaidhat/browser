@@ -168,7 +168,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [tabSidebarOpen, setTabSidebarOpen] = useState(true);
   const openSettings = useCallback(() => window.browser.openSettings(), []);
-  const [font, setFont] = useState<'inter' | 'pt-serif'>('pt-serif');
+  const [font, setFont] = useState<'geist' | 'pt-serif'>('pt-serif');
   const [loadingTabs, setLoadingTabs] = useState<Record<number, boolean>>({});
   const [favicons, setFavicons] = useState<Record<number, string>>({});
   const [chatHistories, setChatHistories] = useState<ChatHistories>({});
@@ -195,7 +195,7 @@ export default function App() {
   }, [activeTab?.title, activeTab?.id]);
 
   useEffect(() => {
-    const ff = font === 'inter' ? 'Inter, sans-serif' : "'PT Serif', serif";
+    const ff = font === 'geist' ? 'Geist, sans-serif' : "'PT Serif', serif";
     document.documentElement.style.fontFamily = ff;
     document.body.style.fontFamily = ff;
   }, [font]);

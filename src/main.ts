@@ -28,7 +28,7 @@ interface Settings {
   openclawUrl: string;
   openclawToken: string;
   emailAccounts: EmailAccount[];
-  font: 'inter' | 'pt-serif';
+  font: 'geist' | 'pt-serif';
   theme: 'light' | 'sunset' | 'dark' | 'system';
 }
 
@@ -746,10 +746,10 @@ ipcMain.on('chat-abort-stream', (_event, requestId: string) => {
   }
 });
 
-ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMessage[]) => {
+ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMessage[], modelId: string) => {
   const settings = loadSettings();
   const hasFiles = messages.some(m => Array.isArray(m.content) && m.content.some(b => b.type === 'file'));
-  const resolved = getModelForId(settings, 'gpt-5.4-mini', hasFiles);
+  const resolved = getModelForId(settings, modelId || 'gpt-5.4-mini', hasFiles);
   if ('error' in resolved) {
     event.sender.send('chat-stream-error', requestId, resolved.error);
     return;

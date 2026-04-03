@@ -25,7 +25,7 @@ export function SettingsPage() {
   const [serperKey, setSerperKey] = useState('');
   const [openclawUrl, setOpenclawUrl] = useState('');
   const [openclawToken, setOpenclawToken] = useState('');
-  const [font, setFont] = useState<'inter' | 'pt-serif'>('pt-serif');
+  const [font, setFont] = useState<'geist' | 'pt-serif'>('pt-serif');
   const [theme, setTheme] = useState<'light' | 'sunset' | 'dark' | 'system'>('system');
   const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
@@ -268,11 +268,11 @@ export function SettingsPage() {
                 <label className={labelClass}>Font</label>
                 <div className="flex gap-2">
                   <button
-                    className={`flex-1 px-3 py-2 rounded-lg border text-[13px] cursor-pointer transition-colors ${font === 'inter' ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium' : 'border-neutral-200 dark:border-neutral-700 bg-transparent text-neutral-600 dark:text-neutral-400 hover:bg-black/5 dark:hover:bg-white/5'}`}
-                    style={{ fontFamily: 'Inter, sans-serif' }}
-                    onClick={() => setFont('inter')}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-[13px] cursor-pointer transition-colors ${font === 'geist' ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium' : 'border-neutral-200 dark:border-neutral-700 bg-transparent text-neutral-600 dark:text-neutral-400 hover:bg-black/5 dark:hover:bg-white/5'}`}
+                    style={{ fontFamily: 'Geist, sans-serif' }}
+                    onClick={() => setFont('geist')}
                   >
-                    Inter
+                    Geist
                   </button>
                   <button
                     className={`flex-1 px-3 py-2 rounded-lg border text-[13px] cursor-pointer transition-colors ${font === 'pt-serif' ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium' : 'border-neutral-200 dark:border-neutral-700 bg-transparent text-neutral-600 dark:text-neutral-400 hover:bg-black/5 dark:hover:bg-white/5'}`}
