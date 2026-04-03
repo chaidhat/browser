@@ -1,17 +1,20 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { IoClose } from 'react-icons/io5';
-import { FiArrowUp, FiArrowRight, FiChevronDown, FiCopy, FiCheck, FiSquare, FiEdit2, FiRefreshCw } from 'react-icons/fi';
+import { FiArrowUp, FiArrowRight, FiCopy, FiCheck, FiSquare, FiEdit2, FiRefreshCw } from 'react-icons/fi';
 import { renderContent } from '../utils/renderContent';
-import type { ChatMessage, ChatContentBlock, SerperResult, SerperImageResult, HistoryEntry } from '../preload';
+import type { ChatMessage, ChatContentBlock, SerperResult, SerperImageResult, HistoryEntry, ToolCallInfo } from '../preload';
 import logoLight from '../assets/logo.png';
 import logoDark from '../assets/logo-dark.png';
 import { rankedDomains } from '../utils/rankedDomains';
+import { buildCustomToolsPromptText } from '../customTools';
 
-const MODELS = [
-  { id: 'gpt-5.4', label: 'GPT-5.4', keyField: 'openaiKey' as const },
-  { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', keyField: 'anthropicKey' as const },
-  { id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro', keyField: 'googleKey' as const },
-];
+export interface ToolCallDisplay {
+  toolCallId: string;
+  toolName: string;
+  toolArgs: Record<string, any>;
+  result?: string;
+  status: 'running' | 'done' | 'error';
+}
 
 export interface SearchResults {
   query: string;
@@ -31,7 +34,10 @@ export interface DisplayMessage {
   pdfs?: PdfAttachment[];
   searchResults?: SearchResults;
   durationMs?: number;
+  toolCalls?: ToolCallDisplay[];
 }
+
+const customToolsPromptText = buildCustomToolsPromptText();
 
 interface Props {
   tabId: number;
@@ -83,39 +89,14 @@ function CopyButton({ text, className = '' }: { text: string; className?: string
 }
 
 function RetryButton({ index, onRetry }: { index: number; onRetry: (idx: number, modelId: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
   return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen(prev => !prev)}
-        className="border-none bg-transparent cursor-pointer p-1 rounded transition-colors text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
-        title="Retry with different model"
-      >
-        <FiRefreshCw size={14} />
-      </button>
-      {open && (
-        <div className="absolute bottom-full left-0 mb-1 z-50 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-lg overflow-hidden">
-          {MODELS.map(m => (
-            <button
-              key={m.id}
-              onClick={() => { setOpen(false); onRetry(index, m.id); }}
-              className="block w-full text-left px-3 py-1.5 border-none bg-transparent cursor-pointer text-[12px] text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700 transition-colors whitespace-nowrap"
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <button
+      onClick={() => onRetry(index, 'gpt-5.4')}
+      className="border-none bg-transparent cursor-pointer p-1 rounded transition-colors text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
+      title="Retry"
+    >
+      <FiRefreshCw size={14} />
+    </button>
   );
 }
 
@@ -125,7 +106,39 @@ function formatDuration(ms: number): string {
   return `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s`;
 }
 
-/** Extract the "output" string value from a partial/complete JSON like {"output":"...","shouldShowSerper":...} */
+function ToolCallRow({ toolCall }: { toolCall: ToolCallDisplay }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="text-[15px] leading-relaxed text-neutral-400 dark:text-neutral-500">
+      <div
+        className="flex items-center gap-1 cursor-pointer select-none hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span className={`text-[9px] transition-transform inline-block ${expanded ? 'rotate-90' : ''}`}>&#9654;</span>
+        <span>tool call <span className="font-medium text-neutral-500 dark:text-neutral-400">{toolCall.toolName}</span></span>
+        {toolCall.status === 'running' && (
+          <span
+            className="ml-1 inline-block h-[0.8em] w-[0.8em] animate-spin rounded-full border-[1.5px] border-current border-t-transparent align-[-0.08em] opacity-70"
+            aria-label="Running"
+          />
+        )}
+        {toolCall.status === 'error' && <span className="text-red-400 ml-0.5">failed</span>}
+      </div>
+      {expanded && (
+        <div className="ml-4 mt-1 p-2 rounded-md bg-neutral-100 dark:bg-neutral-800 text-[15px] leading-relaxed font-mono max-h-[200px] overflow-auto whitespace-pre-wrap">
+          <div className="text-neutral-500 dark:text-neutral-400">args: {JSON.stringify(toolCall.toolArgs, null, 2)}</div>
+          {toolCall.result != null && (
+            <div className="mt-1.5 pt-1.5 text-neutral-400 dark:text-neutral-500 border-t border-neutral-200 dark:border-neutral-700">
+              result: {toolCall.result.length > 500 ? toolCall.result.slice(0, 500) + '…' : toolCall.result}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Extract the "output" string value from a partial/complete JSON like {"output":"..."} */
 function extractOutputFromPartialJson(raw: string): string {
   // Find the start of the output value
   const keyPatterns = ['"output":"', '"output": "', '"output" : "'];
@@ -170,16 +183,33 @@ function extractOutputFromPartialJson(raw: string): string {
   return result;
 }
 
-/** Parse shouldShowSerper from completed JSON response */
-function parseShouldShowSerper(raw: string): boolean {
+function parseSearchToolResults(raw: string): SearchResults | null {
   try {
     const parsed = JSON.parse(raw);
-    return !!parsed.shouldShowSerper;
+    if (!parsed || typeof parsed.query !== 'string' || !Array.isArray(parsed.results)) return null;
+    return {
+      query: parsed.query,
+      results: parsed.results
+        .filter((r: any) => r && typeof r.title === 'string' && typeof r.link === 'string')
+        .map((r: any) => ({
+          title: r.title,
+          link: r.link,
+          snippet: typeof r.snippet === 'string' ? r.snippet : '',
+        })),
+    };
   } catch {
-    // Try regex fallback for malformed JSON
-    const match = raw.match(/"shouldShowSerper"\s*:\s*(true|false)/);
-    return match?.[1] === 'true';
+    return null;
   }
+}
+
+function applySearchResultsToMessages(messages: DisplayMessage[], searchResults?: SearchResults): DisplayMessage[] {
+  if (!searchResults || messages.length === 0) return [...messages];
+  const updated = [...messages];
+  updated[updated.length - 1] = {
+    ...updated[updated.length - 1],
+    searchResults,
+  };
+  return updated;
 }
 
 let nextRequestId = 0;
@@ -191,8 +221,9 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   const [pendingImages, setPendingImages] = useState<string[]>([]);
   const [pendingPdfs, setPendingPdfs] = useState<PdfAttachment[]>([]);
   const [thinkingSeconds, setThinkingSeconds] = useState(0);
-  const [selectedModel, setSelectedModel] = useState('gpt-5.4');
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [pendingToolCalls, setPendingToolCalls] = useState<ToolCallDisplay[]>([]);
+  const pendingToolCallsRef = useRef<ToolCallDisplay[]>([]);
+  const pendingSearchResultsRef = useRef<SearchResults | undefined>(undefined);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [showImages, setShowImages] = useState<Record<number, boolean>>({});
   const [acIndex, setAcIndex] = useState(-1);
@@ -207,10 +238,6 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   const cleanupRef = useRef<(() => void) | null>(null);
   const currentRequestIdRef = useRef<string | null>(null);
   const thinkingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const prevRenderedRef = useRef<string>('');
-  const streamBufferRef = useRef<string>('');
-  const streamFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const modelMenuRef = useRef<HTMLDivElement>(null);
 
   const acSuggestions = useMemo(() => {
     if (messages.length > 0) return [];
@@ -341,17 +368,6 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   }, [hidden]);
 
   useEffect(() => {
-    if (!modelMenuOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
-        setModelMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [modelMenuOpen]);
-
-  useEffect(() => {
     if (initialQuery) {
       onInitialQueryConsumed?.(tabId);
       sendChat(initialQuery);
@@ -411,7 +427,37 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     onMessagesChange(tabId, newMessages);
 
     const apiHistory: ChatMessage[] = [
-      { role: 'system', content: 'You are a helpful assistant built into a web browser. Be concise and direct in your responses. Avoid unnecessary filler or preamble. Format links as markdown.\n\nYou MUST respond in this exact JSON format:\n{"output": "your response here with markdown formatting", "shouldShowSerper": true/false}\n\nshouldShowSerper should be true when the user\'s query would benefit from web search results (e.g. factual questions, current events, product lookups, how-to queries, looking up specific things like "dolphins" or "best restaurants"). Set it to false for conversational, creative, or coding tasks where search results would not help.\n\nIMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within the output string. Escape any quotes within the output with \\".' },
+      { role: 'system', content: `You are a helpful assistant built into a web browser. You are also a helpful search engine. Be concise and direct. Format links as markdown. Today's date is ${new Date().toISOString().split('T')[0]}.
+
+Expect the user to sometimes send short search-term-style queries, including single-word queries. In those cases, interpret the message as a request to search the web and then describe the most relevant results.
+
+You MUST respond with exactly one JSON object in one of these two formats:
+
+**Option A - Final response:**
+{"outputType": "text", "output": "your response here with markdown formatting"}
+
+**Option B - Tool calls (can call multiple in parallel):**
+{"outputType": "toolCalls", "toolCalls": [{"name": "<toolName>", "input": {<args>}}]}
+
+Examples of valid tool calls:
+{"outputType": "toolCalls", "toolCalls": [{"name": "search", "input": {"query": "best daily running shoes 2026"}}]}
+{"outputType": "toolCalls", "toolCalls": [{"name": "consultModel", "input": {"model": "claude-opus-4-6", "question": "Compare two daily running shoe recommendations and explain the tradeoffs."}}]}
+{"outputType": "toolCalls", "toolCalls": [{"name": "search", "input": {"query": "best speed running shoes 2026"}}, {"name": "consultModel", "input": {"model": "gemini-3.1-pro", "question": "What matters most when choosing a speed-focused running shoe?"}}]}
+
+Available tools:
+${customToolsPromptText}
+
+After tools execute, you will receive a message with {"toolResults": [{tool, result}]}. Use these results to formulate your final response (Option A) or call more tools (Option B).
+
+You should default to calling the search tool first. If the user is asking for information, current facts, recommendations, research, or anything that benefits from web results, your first response should usually be Option B with a search tool call.
+
+Do not send Option A until you have already used the search tool, unless the user is clearly asking for something that does not need web results.
+
+If you respond with Option A instead of a tool call, that is the end of your turn. Do not expect any more tools to run after a direct response. The user must send another message before you can continue.
+
+When multiple tool calls would help, call as many as possible in parallel in a single Option B response instead of serializing them across multiple turns.
+
+IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within the output string. Escape quotes with \\".` },
       ...newMessages
       .filter(m => m.role !== 'error')
       .map(m => {
@@ -446,98 +492,84 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     setIsTyping(true);
     onThinkingChange?.(tabId, true);
     setStreamingContent('');
-    prevRenderedRef.current = '';
-    streamBufferRef.current = '';
-    if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
+    setPendingToolCalls([]);
+    pendingToolCallsRef.current = [];
+    pendingSearchResultsRef.current = undefined;
     let accumulated = '';
     const requestId = `chat-${tabId}-${nextRequestId++}`;
     currentRequestIdRef.current = requestId;
     const msgsSnapshot = newMessages;
     const startTime = Date.now();
-    const userQuery = text;
-
-    const STREAM_DEBOUNCE_MS = 500;
 
     cleanupRef.current = window.browser.chatSendStream(requestId, apiHistory, {
       onChunk(chunk: string) {
         accumulated += chunk;
         const extracted = extractOutputFromPartialJson(accumulated);
-        streamBufferRef.current = extracted;
-        // Debounce DOM updates so fade animations can complete
-        if (!streamFlushTimerRef.current) {
-          streamFlushTimerRef.current = setTimeout(() => {
-            streamFlushTimerRef.current = null;
-            setStreamingContent(streamBufferRef.current);
-          }, STREAM_DEBOUNCE_MS);
+        setStreamingContent(extracted);
+      },
+      onToolCall(info: ToolCallInfo) {
+        setPendingToolCalls(prev => {
+          const idx = prev.findIndex(tc => tc.toolCallId === info.toolCallId);
+          if (idx >= 0) {
+            const updated = [...prev];
+            updated[idx] = { ...info };
+            pendingToolCallsRef.current = updated;
+            return updated;
+          }
+          const added = [...prev, { ...info }];
+          pendingToolCallsRef.current = added;
+          return added;
+        });
+        if (info.toolName === 'search' && info.status === 'done' && info.result) {
+          const parsedResults = parseSearchToolResults(info.result);
+          if (parsedResults && parsedResults.results.length > 0) {
+            pendingSearchResultsRef.current = parsedResults;
+            onMessagesChange(tabId, applySearchResultsToMessages(msgsSnapshot, parsedResults));
+          }
         }
       },
       onDone() {
-        if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
         setIsTyping(false);
         onThinkingChange?.(tabId, false);
         setStreamingContent('');
-        prevRenderedRef.current = '';
 
-        // Parse the final JSON to get output and shouldShowSerper
         const outputText = extractOutputFromPartialJson(accumulated);
         const finalContent = outputText || accumulated;
-        const shouldShowSerper = parseShouldShowSerper(accumulated);
+        const finalMessages = applySearchResultsToMessages(msgsSnapshot, pendingSearchResultsRef.current);
+        const collectedToolCalls = pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : undefined;
+        const assistantMsg: DisplayMessage = { role: 'assistant', content: finalContent, durationMs: Date.now() - startTime, toolCalls: collectedToolCalls };
 
-        const finalMessages = [...msgsSnapshot];
-        const assistantMsg: DisplayMessage = { role: 'assistant', content: finalContent, durationMs: Date.now() - startTime };
+        setPendingToolCalls([]);
+        pendingToolCallsRef.current = [];
+        pendingSearchResultsRef.current = undefined;
 
-        // Always show the assistant message immediately
         onMessagesChange(tabId, [...finalMessages, assistantMsg]);
-
-        if (shouldShowSerper && userQuery) {
-          // Fire Serper search after AI decides it's useful — update messages when results arrive
-          const webSearch = window.browser.serperSearch(userQuery).catch(() => null);
-          const imageSearch = window.browser.serperImageSearch(userQuery).catch(() => null);
-
-          Promise.all([webSearch, imageSearch]).then(([results, imageResults]) => {
-            if ((results && results.length > 0) || (imageResults && imageResults.length > 0)) {
-              const searchResultsData: SearchResults = {
-                query: userQuery,
-                results: results || [],
-                images: imageResults || undefined,
-              };
-              // Attach search results to the user message, keep the assistant message
-              const updatedMessages = [...finalMessages];
-              updatedMessages[updatedMessages.length - 1] = {
-                ...updatedMessages[updatedMessages.length - 1],
-                searchResults: searchResultsData,
-              };
-              onMessagesChange(tabId, [...updatedMessages, assistantMsg]);
-            }
-          });
-        }
         cleanupRef.current = null;
       },
       onError(error: string) {
-        if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
         setIsTyping(false);
         onThinkingChange?.(tabId, false);
         setStreamingContent('');
-        prevRenderedRef.current = '';
-        onMessagesChange(tabId, [...msgsSnapshot, { role: 'error', content: error }]);
+        setPendingToolCalls([]);
+        pendingToolCallsRef.current = [];
+        onMessagesChange(tabId, [...applySearchResultsToMessages(msgsSnapshot, pendingSearchResultsRef.current), { role: 'error', content: error }]);
+        pendingSearchResultsRef.current = undefined;
         cleanupRef.current = null;
       },
-    }, selectedModel);
-  }, [inputValue, pendingImages, pendingPdfs, messages, tabId, tabTitle, selectedModel, onMessagesChange, onTitleChange, onThinkingChange]);
+    });
+  }, [inputValue, pendingImages, pendingPdfs, messages, tabId, tabTitle, onMessagesChange, onTitleChange, onThinkingChange]);
 
-  const retryRef = useRef<{ assistantIndex: number; modelId: string } | null>(null);
+  const retryRef = useRef<{ assistantIndex: number } | null>(null);
 
-  const retryWithModel = useCallback((assistantIndex: number, modelId: string) => {
+  const retryWithModel = useCallback((assistantIndex: number, _modelId: string) => {
     const userIdx = assistantIndex - 1;
     if (userIdx < 0 || messages[userIdx]?.role !== 'user') return;
     const userMsg = messages[userIdx];
-    // Set editing index to the user message so sendChat truncates properly
     setEditingIndex(userIdx);
-    setSelectedModel(modelId);
     setInputValue(userMsg.content);
     if (userMsg.images) setPendingImages(userMsg.images);
     if (userMsg.pdfs) setPendingPdfs(userMsg.pdfs);
-    retryRef.current = { assistantIndex, modelId };
+    retryRef.current = { assistantIndex };
   }, [messages]);
 
   // Auto-send when retry is queued
@@ -668,6 +700,13 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             if (msg.role === 'assistant') {
               return (
                 <div key={i} className="flex flex-col self-start max-w-[90%]">
+                  {msg.toolCalls && msg.toolCalls.length > 0 && (
+                    <div className="flex flex-col gap-1 mb-1 ml-1">
+                      {msg.toolCalls.map((tc) => (
+                        <ToolCallRow key={tc.toolCallId} toolCall={tc} />
+                      ))}
+                    </div>
+                  )}
                   <div
                     className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-[15px] leading-relaxed break-words text-black dark:text-neutral-200"
                                        dangerouslySetInnerHTML={{ __html: renderContent(msg.content) }}
@@ -782,45 +821,18 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
               </div>
             );
           })}
+          {isTyping && pendingToolCalls.length > 0 && (
+            <div className="flex flex-col gap-1 self-start max-w-[90%] ml-1">
+              {pendingToolCalls.map((tc) => (
+                <ToolCallRow key={tc.toolCallId} toolCall={tc} />
+              ))}
+            </div>
+          )}
           {isTyping && (
             streamingContent ? (
               <div
                 className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-[15px] leading-relaxed max-w-[90%] break-words text-black dark:text-neutral-200 self-start"
-                               dangerouslySetInnerHTML={{ __html: renderContent(streamingContent) }}
-                ref={(el) => {
-                  if (!el) return;
-                  const prevLen = prevRenderedRef.current.length;
-                  const curLen = streamingContent.length;
-                  if (curLen <= prevLen) { prevRenderedRef.current = streamingContent; return; }
-                  // Walk all text nodes and find where new content starts
-                  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-                  let charCount = 0;
-                  let node: Text | null;
-                  while ((node = walker.nextNode() as Text | null)) {
-                    const nodeLen = node.textContent?.length || 0;
-                    const nodeEnd = charCount + nodeLen;
-                    if (nodeEnd > prevLen && node.parentElement) {
-                      // This text node contains new characters
-                      const newStart = Math.max(0, prevLen - charCount);
-                      if (newStart === 0 && !node.parentElement.classList.contains('stream-fade-in')) {
-                        // Entire node is new — wrap it
-                        const wrapper = document.createElement('span');
-                        wrapper.className = 'stream-fade-in';
-                        node.parentElement.insertBefore(wrapper, node);
-                        wrapper.appendChild(node);
-                      } else if (newStart > 0) {
-                        // Split the text node — only the tail is new
-                        const newNode = node.splitText(newStart);
-                        const wrapper = document.createElement('span');
-                        wrapper.className = 'stream-fade-in';
-                        newNode.parentElement!.insertBefore(wrapper, newNode);
-                        wrapper.appendChild(newNode);
-                      }
-                    }
-                    charCount = nodeEnd;
-                  }
-                  prevRenderedRef.current = streamingContent;
-                }}
+                dangerouslySetInnerHTML={{ __html: renderContent(streamingContent) }}
               />
             ) : (
               <div className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] self-start bg-transparent text-neutral-400" >
@@ -941,37 +953,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             </button>
           )}
         </div>
-        <div className="flex items-center pb-4 no-drag self-start relative z-10">
-          <div className="relative" ref={modelMenuRef}>
-            <button
-              className="h-7 px-2.5 border-none rounded-lg bg-transparent text-[11px] font-medium text-neutral-400 dark:text-neutral-500 cursor-pointer flex items-center gap-1 transition-colors hover:text-neutral-600 dark:hover:text-neutral-300 whitespace-nowrap"
-              onClick={() => setModelMenuOpen(prev => !prev)}
-            >
-              {MODELS.find(m => m.id === selectedModel)?.label}
-              <FiChevronDown size={11} />
-            </button>
-            {modelMenuOpen && (
-              <div className="absolute bottom-full left-0 mb-1 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-lg overflow-hidden z-50 min-w-[160px] no-drag">
-                {MODELS.map(m => (
-                  <button
-                    key={m.id}
-                    className={`w-full text-left px-3 py-2 text-[12px] border-none cursor-pointer transition-colors ${
-                      m.id === selectedModel
-                        ? 'bg-neutral-100 dark:bg-neutral-700 text-black dark:text-neutral-200 font-medium'
-                        : 'bg-transparent text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700/50'
-                    }`}
-                    onClick={() => {
-                      setSelectedModel(m.id);
-                      setModelMenuOpen(false);
-                    }}
-                  >
-                    {m.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
+        <div className="pb-2" />
       </div>
       {lightboxImage && (
         <div

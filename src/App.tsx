@@ -4,7 +4,6 @@ import { Toolbar } from './components/Toolbar';
 import { WebviewContainer, WebviewContainerHandle, TabInfo } from './components/WebviewContainer';
 import { ChatSidebar } from './components/ChatSidebar';
 import { ChatView, DisplayMessage } from './components/ChatView';
-import { SettingsModal } from './components/SettingsModal';
 import { DownloadBar, DownloadItem } from './components/DownloadBar';
 import { FindBar } from './components/FindBar';
 
@@ -168,7 +167,7 @@ export default function App() {
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [tabSidebarOpen, setTabSidebarOpen] = useState(true);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const openSettings = useCallback(() => window.browser.openSettings(), []);
   const [font, setFont] = useState<'inter' | 'pt-serif'>('pt-serif');
   const [loadingTabs, setLoadingTabs] = useState<Record<number, boolean>>({});
   const [favicons, setFavicons] = useState<Record<number, string>>({});
@@ -221,6 +220,14 @@ export default function App() {
       setFont(settings.font || 'pt-serif');
       setInitialized(true);
     })();
+
+    // Reload settings when settings window closes
+    window.browser.onSettingsChanged(() => {
+      window.browser.getSettings().then(s => {
+        setFont(s.font || 'pt-serif');
+        (window as any).__applyTheme?.(s.theme || 'system');
+      });
+    });
   }, []);
 
   useEffect(() => {
@@ -504,9 +511,6 @@ export default function App() {
     }
   }, [findOpen]);
 
-  useEffect(() => {
-    webviewRef.current?.setVisibility(!settingsOpen);
-  }, [settingsOpen]);
 
   const handleNavigate = useCallback((url: string) => {
     if (activeTab?.type === 'chat') {
@@ -549,7 +553,7 @@ export default function App() {
         onCreate={() => dispatch({ type: 'CREATE_TAB' })}
         onDuplicate={(id) => dispatch({ type: 'DUPLICATE_TAB', id })}
         onReorder={(tabs) => dispatch({ type: 'REORDER_TABS', tabs })}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={openSettings}
       />
       </div>
       <div className="flex-1 flex flex-col min-w-0 h-full bg-white dark:bg-[#111]">
@@ -566,7 +570,7 @@ export default function App() {
             onToggleChat={() => setSidebarOpen(prev => !prev)}
             onToggleTabSidebar={() => setTabSidebarOpen(prev => !prev)}
             tabSidebarOpen={tabSidebarOpen}
-            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenSettings={openSettings}
             isChatTab={isChat}
             allTabs={tabState.tabs}
             visitHistory={visitHistory}
@@ -616,7 +620,6 @@ export default function App() {
           onDismissAll={() => setDownloads([])}
         />
       </div>
-      {settingsOpen && <SettingsModal onClose={() => { setSettingsOpen(false); window.browser.getSettings().then(s => setFont(s.font || 'pt-serif')); }} activeUrl={activeTab?.url} onClearHistory={() => { setVisitHistory([]); window.browser.saveHistory([]); }} />}
     </div>
   );
 }

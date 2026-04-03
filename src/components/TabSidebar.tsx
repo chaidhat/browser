@@ -108,10 +108,14 @@ export function TabSidebar({ tabs, activeTabId, loadingTabs, favicons, thinkingT
                   const items = [
                     ...(tab.type !== 'chat' ? [{ label: 'Duplicate Tab', id: 'duplicate' }] : []),
                     { label: 'Close Tab', id: 'close' },
+                    ...(tab.type !== 'chat' && tab.url ? [{ label: 'Clear Site Data', id: 'clear-site-data' }] : []),
                   ];
                   const action = await window.browser.showContextMenu(items);
                   if (action === 'duplicate') onDuplicate(tab.id);
                   else if (action === 'close') onClose(tab.id);
+                  else if (action === 'clear-site-data' && tab.url) {
+                    try { await window.browser.clearSiteData(new URL(tab.url).origin); } catch {}
+                  }
                 }}
                 onClick={(e) => {
                   if (!(e.target as HTMLElement).closest('.tab-close-btn')) {

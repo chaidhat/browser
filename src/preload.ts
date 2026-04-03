@@ -28,6 +28,7 @@ export interface Settings {
   serperKey: string;
   emailAccounts: EmailAccount[];
   font: 'inter' | 'pt-serif';
+  theme: 'light' | 'sunset' | 'dark' | 'system';
 }
 
 export interface SerperResult {
@@ -42,10 +43,19 @@ export interface SerperImageResult {
   link: string;
 }
 
+export interface ToolCallInfo {
+  toolCallId: string;
+  toolName: string;
+  toolArgs: Record<string, any>;
+  result?: string;
+  status: 'running' | 'done' | 'error';
+}
+
 export interface ChatStreamCallbacks {
   onChunk: (chunk: string) => void;
   onDone: () => void;
   onError: (error: string) => void;
+  onToolCall?: (info: ToolCallInfo) => void;
 }
 
 export interface DownloadStartedEvent {
@@ -75,13 +85,17 @@ export interface HistoryEntry {
 }
 
 export interface BrowserAPI {
-  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks, modelId?: string) => () => void;
+  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks) => () => void;
   chatAbortStream: (requestId: string) => void;
   chatGenerateTitle: (userMessage: string) => Promise<string | null>;
   chatSuggest: (messages: ChatMessage[], partialInput: string) => Promise<string | null>;
   autocompleteSuggest: (query: string) => Promise<string | null>;
   getSettings: () => Promise<Settings>;
   saveSettings: (settings: Settings) => Promise<boolean>;
+  setTheme: (theme: Settings['theme']) => Promise<boolean>;
+  openSettings: () => Promise<boolean>;
+  closeWindow: () => Promise<boolean>;
+  onSettingsChanged: (callback: () => void) => void;
   loadTabs: () => Promise<unknown>;
   saveTabs: (data: unknown) => Promise<boolean>;
   loadHistory: () => Promise<HistoryEntry[]>;
@@ -103,7 +117,7 @@ export interface BrowserAPI {
 }
 
 contextBridge.exposeInMainWorld('browser', {
-  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks, modelId?: string) => {
+  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks) => {
     const onChunk = (_event: unknown, id: string, chunk: string) => {
       if (id === requestId) callbacks.onChunk(chunk);
     };
@@ -119,17 +133,22 @@ contextBridge.exposeInMainWorld('browser', {
         callbacks.onError(error);
       }
     };
+    const onToolCall = (_event: unknown, id: string, info: ToolCallInfo) => {
+      if (id === requestId) callbacks.onToolCall?.(info);
+    };
 
     const cleanup = () => {
       ipcRenderer.removeListener('chat-stream-chunk', onChunk);
       ipcRenderer.removeListener('chat-stream-done', onDone);
       ipcRenderer.removeListener('chat-stream-error', onError);
+      ipcRenderer.removeListener('chat-stream-tool-call', onToolCall);
     };
 
     ipcRenderer.on('chat-stream-chunk', onChunk);
     ipcRenderer.on('chat-stream-done', onDone);
     ipcRenderer.on('chat-stream-error', onError);
-    ipcRenderer.send('chat-send-stream', requestId, messages, modelId);
+    ipcRenderer.on('chat-stream-tool-call', onToolCall);
+    ipcRenderer.send('chat-send-stream', requestId, messages);
 
     return cleanup;
   },
@@ -141,6 +160,12 @@ contextBridge.exposeInMainWorld('browser', {
   autocompleteSuggest: (query: string) => ipcRenderer.invoke('autocomplete-suggest', query),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings: Settings) => ipcRenderer.invoke('save-settings', settings),
+  setTheme: (theme: Settings['theme']) => ipcRenderer.invoke('set-theme', theme),
+  openSettings: () => ipcRenderer.invoke('open-settings'),
+  closeWindow: () => ipcRenderer.invoke('close-window'),
+  onSettingsChanged: (callback: () => void) => {
+    ipcRenderer.on('settings-changed', () => callback());
+  },
   loadTabs: () => ipcRenderer.invoke('load-tabs'),
   saveTabs: (data: unknown) => ipcRenderer.invoke('save-tabs', data),
   loadHistory: () => ipcRenderer.invoke('load-history'),

@@ -1,9 +1,10 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, shell, session, desktopCapturer, systemPreferences } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import { consultModelToolSpec, searchToolSpec, type CustomToolSpec } from './customTools';
 
 app.name = 'Pause';
-nativeTheme.themeSource = 'system';
+// Theme is applied after settings are loaded (see app.whenReady)
 
 if (app.isPackaged) {
   app.setAsDefaultProtocolClient('http');
@@ -26,18 +27,26 @@ interface Settings {
   serperKey: string;
   emailAccounts: EmailAccount[];
   font: 'inter' | 'pt-serif';
+  theme: 'light' | 'sunset' | 'dark' | 'system';
 }
 
 const settingsPath = path.join(app.getPath('userData'), 'settings.json');
 const tabsPath = path.join(app.getPath('userData'), 'tabs.json');
 const historyPath = path.join(app.getPath('userData'), 'history.json');
 
+const settingsDefaults: Settings = { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', emailAccounts: [], font: 'pt-serif', theme: 'system' };
+
+function applyTheme(theme: Settings['theme']): void {
+  // 'sunset' is treated as dark at the OS level; the renderer handles the warm tint
+  nativeTheme.themeSource = theme === 'sunset' ? 'dark' : theme;
+}
+
 function loadSettings(): Settings {
   try {
     const data = fs.readFileSync(settingsPath, 'utf-8');
-    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', emailAccounts: [], font: 'pt-serif', ...JSON.parse(data) };
+    return { ...settingsDefaults, ...JSON.parse(data) };
   } catch {
-    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', emailAccounts: [], font: 'pt-serif' };
+    return { ...settingsDefaults };
   }
 }
 
@@ -46,6 +55,56 @@ function saveSettings(settings: Settings): void {
 }
 
 let mainWindow: BrowserWindow | null = null;
+let settingsWindow: BrowserWindow | null = null;
+
+function openSettingsWindow(): void {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.focus();
+    return;
+  }
+
+  settingsWindow = new BrowserWindow({
+    width: 720,
+    height: 520,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 17, y: 17 },
+    transparent: true,
+    vibrancy: 'sidebar',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+    parent: mainWindow || undefined,
+  });
+
+  const indexPath = path.join(__dirname, '..', 'ui', 'index.html');
+  settingsWindow.loadFile(indexPath, { query: { settings: '1' } });
+
+  settingsWindow.on('closed', () => {
+    settingsWindow = null;
+    // Notify main window to reload settings (e.g. font change)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('settings-changed');
+    }
+  });
+}
+
+function updateAppIcon(): void {
+  if (process.platform !== 'darwin' || !mainWindow) return;
+  const icnsName = 'icon_dark.icns';
+  const icnsPath = app.isPackaged
+    ? path.join(process.resourcesPath, icnsName)
+    : path.join(__dirname, '..', 'icon', icnsName);
+  console.log('Setting icon:', icnsPath, 'exists:', fs.existsSync(icnsPath));
+  if (fs.existsSync(icnsPath)) {
+    mainWindow.setIcon(icnsPath);
+    app.dock?.setIcon(icnsPath);
+  }
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -64,6 +123,10 @@ function createWindow(): void {
   });
 
   mainWindow.loadFile(path.join(__dirname, '..', 'ui', 'index.html'));
+
+  // Set dock icon based on theme and update when it changes
+  updateAppIcon();
+  nativeTheme.on('updated', updateAppIcon);
 
   // Intercept Cmd+T and Cmd+F from the main window itself (e.g., when focus is in a text input)
   mainWindow.webContents.on('before-input-event', (event, input) => {
@@ -254,6 +317,23 @@ ipcMain.handle('get-settings', () => {
 
 ipcMain.handle('save-settings', (_event, settings: Settings) => {
   saveSettings(settings);
+  applyTheme(settings.theme);
+  return true;
+});
+
+ipcMain.handle('set-theme', (_event, theme: Settings['theme']) => {
+  applyTheme(theme);
+  return true;
+});
+
+ipcMain.handle('open-settings', () => {
+  openSettingsWindow();
+  return true;
+});
+
+ipcMain.handle('close-window', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win && win !== mainWindow) win.close();
   return true;
 });
 
@@ -433,7 +513,7 @@ ipcMain.handle('serper-image-search', async (_event, query: string) => {
 });
 
 // OpenAI Chat IPC (using Vercel AI SDK)
-import { streamText, generateText, tool, stepCountIs } from 'ai';
+import { generateObject, generateText } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import type { OpenAILanguageModelResponsesOptions } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -495,37 +575,6 @@ function toSdkMessages(messages: ChatMessage[]) {
   });
 }
 
-function buildTools(settings: Settings) {
-  const tools: Record<string, any> = {};
-
-  if (settings.braveKey) {
-    tools.webSearch = tool({
-      description: 'Search the web for current information using Brave Search. Use this when you need up-to-date information, facts, or anything you are unsure about.',
-      inputSchema: z.object({
-        query: z.string().describe('The search query'),
-      }),
-      execute: async ({ query }) => {
-        const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5`;
-        const res = await fetch(url, {
-          headers: { 'X-Subscription-Token': settings.braveKey, 'Accept': 'application/json' },
-        });
-        if (!res.ok) {
-          return { error: `Brave Search failed: ${res.status} ${res.statusText}` };
-        }
-        const data = await res.json();
-        const results = (data.web?.results || []).slice(0, 5).map((r: any) => ({
-          title: r.title,
-          url: r.url,
-          description: r.description,
-        }));
-        return { results };
-      },
-    });
-  }
-
-  return tools;
-}
-
 function getModelForId(settings: Settings, modelId: string, hasFiles = false) {
   switch (modelId) {
     case 'claude-opus-4-6': {
@@ -545,13 +594,86 @@ function getModelForId(settings: Settings, modelId: string, hasFiles = false) {
     default: {
       if (!settings.openaiKey) return { error: 'No OpenAI API key configured. Open Settings to add one.' };
       const openai = createOpenAI({ apiKey: settings.openaiKey });
-      // Responses API doesn't support file uploads — fall back to Chat Completions
       if (hasFiles) {
         return { model: openai.chat('gpt-5.4'), isOpenAI: true, isChatCompletions: true };
       }
       return { model: openai.responses('gpt-5.4'), isOpenAI: true };
     }
   }
+}
+
+interface CustomToolDef extends CustomToolSpec {
+  inputSchema: z.ZodTypeAny;
+  execute: (args: any, ctx: { messages: ChatMessage[], settings: Settings, abortSignal: AbortSignal }) => Promise<string>;
+}
+
+function buildToolCallSchema(customTools: CustomToolDef[]) {
+  const schemas = customTools.map((tool) => z.object({
+    name: z.literal(tool.name),
+    input: tool.inputSchema,
+  }));
+
+  if (schemas.length === 0) {
+    return z.object({
+      name: z.string(),
+      input: z.record(z.string(), z.any()),
+    });
+  }
+
+  if (schemas.length === 1) {
+    return schemas[0];
+  }
+
+  return z.union([schemas[0], schemas[1], ...schemas.slice(2)] as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]);
+}
+
+function buildCustomTools(settings: Settings): CustomToolDef[] {
+  return [
+    {
+      ...searchToolSpec,
+      inputSchema: z.object({
+        query: z.string(),
+      }),
+      execute: async ({ query }, { settings: s }) => {
+        if (!query || typeof query !== 'string') return 'Error: Missing query';
+        if (!s.braveKey) return 'Error: No Brave Search API key configured. Open Settings to add one.';
+        const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query.trim())}&count=5`;
+        const res = await fetch(url, {
+          headers: { 'X-Subscription-Token': s.braveKey, Accept: 'application/json' },
+        });
+        if (!res.ok) {
+          return `Error: Brave Search failed: ${res.status} ${res.statusText}`;
+        }
+        const data = await res.json();
+        return JSON.stringify({
+          query: query.trim(),
+          results: (data.web?.results || []).slice(0, 5).map((r: any) => ({
+            title: r.title,
+            link: r.url,
+            snippet: r.description,
+          })),
+        });
+      },
+    },
+    {
+      ...consultModelToolSpec,
+      inputSchema: z.object({
+        model: z.enum(['gemini-3.1-pro', 'claude-opus-4-6']),
+        question: z.string(),
+      }),
+      execute: async ({ model: modelId, question }, { settings: s, abortSignal }) => {
+        if (!question || typeof question !== 'string') return 'Error: Missing question';
+        const resolved = getModelForId(s, modelId);
+        if ('error' in resolved) return `Error: ${resolved.error}`;
+        const result = await generateText({
+          model: resolved.model,
+          messages: [{ role: 'user', content: question.trim() }] as any,
+          abortSignal,
+        });
+        return result.text || '(empty response)';
+      },
+    },
+  ];
 }
 
 const activeAbortControllers = new Map<string, AbortController>();
@@ -564,10 +686,10 @@ ipcMain.on('chat-abort-stream', (_event, requestId: string) => {
   }
 });
 
-ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMessage[], modelId?: string) => {
+ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMessage[]) => {
   const settings = loadSettings();
   const hasFiles = messages.some(m => Array.isArray(m.content) && m.content.some(b => b.type === 'file'));
-  const resolved = getModelForId(settings, modelId || 'gpt-5.4', hasFiles);
+  const resolved = getModelForId(settings, 'gpt-5.4', hasFiles);
   if ('error' in resolved) {
     event.sender.send('chat-stream-error', requestId, resolved.error);
     return;
@@ -576,72 +698,140 @@ ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMe
   const abortController = new AbortController();
   activeAbortControllers.set(requestId, abortController);
 
+  const customTools = buildCustomTools(settings);
+  const toolMap = Object.fromEntries(customTools.map(t => [t.name, t]));
+  const toolCallSchema = buildToolCallSchema(customTools);
+  const responseSchema = z.object({
+    outputType: z.enum(['text', 'toolCalls']),
+    output: z.string().nullable(),
+    toolCalls: z.array(toolCallSchema).min(1).nullable(),
+  });
+  const MAX_TOOL_ROUNDS = 10;
   const MAX_RETRIES = 3;
-  const tools = buildTools(settings);
-  const isChatCompletions = 'isChatCompletions' in resolved && resolved.isChatCompletions;
+  const conversationMessages = [...messages];
+  let toolCallCounter = 0;
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     if (abortController.signal.aborted) {
       activeAbortControllers.delete(requestId);
       event.sender.send('chat-stream-done', requestId);
       return;
     }
 
-    try {
-      let collected = '';
-      const result = streamText({
-        model: resolved.model,
-        messages: toSdkMessages(messages) as any,
-        ...(!isChatCompletions ? { tools, stopWhen: stepCountIs(5) } : {}),
-        abortSignal: abortController.signal,
-        ...(resolved.isOpenAI ? {
-          providerOptions: {
-            openai: {
-              reasoningEffort: 'high',
-            } satisfies OpenAILanguageModelResponsesOptions,
-          },
-        } : {}),
-        onError({ error }) {
-          const message = error instanceof Error ? error.message : String(error);
-          event.sender.send('chat-stream-error', requestId, `Stream error: ${message}`);
-        },
-      });
+    let responseObject: z.infer<typeof responseSchema> | null = null;
+    let succeeded = false;
 
-      for await (const part of result.fullStream) {
-        if (part.type === 'text-delta') {
-          collected += part.text;
-          event.sender.send('chat-stream-chunk', requestId, part.text);
-        }
-      }
-
-      // If response is empty, retry with exponential backoff
-      if (!collected.trim() && attempt < MAX_RETRIES) {
-        const delay = Math.pow(2, attempt) * 500; // 500ms, 1s, 2s
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-
-      activeAbortControllers.delete(requestId);
-      event.sender.send('chat-stream-done', requestId);
-      return;
-    } catch (err: unknown) {
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       if (abortController.signal.aborted) {
         activeAbortControllers.delete(requestId);
         event.sender.send('chat-stream-done', requestId);
         return;
       }
-      // On error, retry with exponential backoff
-      if (attempt < MAX_RETRIES) {
-        const delay = Math.pow(2, attempt) * 500;
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
+      try {
+        const result = await generateObject({
+          model: resolved.model,
+          schema: responseSchema,
+          messages: toSdkMessages(conversationMessages) as any,
+          abortSignal: abortController.signal,
+          ...(resolved.isOpenAI ? {
+            providerOptions: {
+              openai: { reasoningEffort: 'high' } satisfies OpenAILanguageModelResponsesOptions,
+            },
+          } : {}),
+        });
+        responseObject = result.object;
+        const hasTextOutput = responseObject.outputType === 'text' && typeof responseObject.output === 'string' && !!responseObject.output.trim();
+        const hasToolCalls = responseObject.outputType === 'toolCalls' && Array.isArray(responseObject.toolCalls) && responseObject.toolCalls.length > 0;
+        if (!hasTextOutput && !hasToolCalls && attempt < MAX_RETRIES) {
+          await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 500));
+          continue;
+        }
+        succeeded = true;
+        break;
+      } catch (err: unknown) {
+        if (abortController.signal.aborted) {
+          activeAbortControllers.delete(requestId);
+          event.sender.send('chat-stream-done', requestId);
+          return;
+        }
+        if (attempt < MAX_RETRIES) {
+          await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 500));
+          continue;
+        }
+        activeAbortControllers.delete(requestId);
+        const message = err instanceof Error ? err.message : String(err);
+        event.sender.send('chat-stream-error', requestId, `Request failed: ${message}`);
+        return;
       }
+    }
+
+    if (!succeeded) {
       activeAbortControllers.delete(requestId);
-      const message = err instanceof Error ? err.message : String(err);
-      event.sender.send('chat-stream-error', requestId, `Request failed: ${message}`);
+      event.sender.send('chat-stream-error', requestId, 'Request failed after retries');
       return;
     }
+
+    if (!responseObject) {
+      activeAbortControllers.delete(requestId);
+      event.sender.send('chat-stream-error', requestId, 'Request failed: no structured response');
+      return;
+    }
+
+    if (responseObject.outputType === 'toolCalls' && Array.isArray(responseObject.toolCalls) && responseObject.toolCalls.length > 0) {
+      // Assign IDs and notify renderer (status: running)
+      const toolCalls = responseObject.toolCalls.map((tc: any) => {
+        const id = `tc-${toolCallCounter++}`;
+        event.sender.send('chat-stream-tool-call', requestId, {
+          toolCallId: id, toolName: tc.name, toolArgs: tc.input || {}, status: 'running',
+        });
+        return { ...tc, toolCallId: id };
+      });
+
+      // Execute all tools in parallel
+      const results = await Promise.all(toolCalls.map(async (tc: any) => {
+        const toolDef = toolMap[tc.name];
+        if (!toolDef) {
+          const errMsg = `Unknown tool: ${tc.name}`;
+          event.sender.send('chat-stream-tool-call', requestId, {
+            toolCallId: tc.toolCallId, toolName: tc.name, toolArgs: tc.input || {}, result: errMsg, status: 'error',
+          });
+          return { tool: tc.name, error: errMsg };
+        }
+        try {
+          const result = await toolDef.execute(tc.input || {}, {
+            messages: conversationMessages, settings, abortSignal: abortController.signal,
+          });
+          event.sender.send('chat-stream-tool-call', requestId, {
+            toolCallId: tc.toolCallId, toolName: tc.name, toolArgs: tc.input || {}, result, status: 'done',
+          });
+          return { tool: tc.name, result };
+        } catch (err: any) {
+          const errMsg = err?.message || String(err);
+          event.sender.send('chat-stream-tool-call', requestId, {
+            toolCallId: tc.toolCallId, toolName: tc.name, toolArgs: tc.input || {}, result: errMsg, status: 'error',
+          });
+          return { tool: tc.name, error: errMsg };
+        }
+      }));
+
+      // Append tool call + results to conversation for next round
+      conversationMessages.push(
+        { role: 'assistant', content: JSON.stringify(responseObject) },
+        { role: 'user', content: JSON.stringify({ toolResults: results }) },
+      );
+      continue;
+    }
+
+    // Direct response — send as chunk and finish
+    event.sender.send('chat-stream-chunk', requestId, JSON.stringify({ output: typeof responseObject.output === 'string' ? responseObject.output : '' }));
+    activeAbortControllers.delete(requestId);
+    event.sender.send('chat-stream-done', requestId);
+    return;
   }
+
+  // Max tool rounds exceeded
+  activeAbortControllers.delete(requestId);
+  event.sender.send('chat-stream-error', requestId, 'Tool calling loop exceeded maximum rounds');
 });
 
 // Generate inline suggestion using a lightweight model
@@ -760,11 +950,15 @@ ipcMain.handle('chat-generate-title', async (_event, userMessage: string) => {
 });
 
 app.whenReady().then(() => {
+  applyTheme(loadSettings().theme);
+
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: 'Pause',
       submenu: [
         { role: 'about' },
+        { type: 'separator' },
+        { label: 'Preferences…', accelerator: 'CmdOrCtrl+,', click: () => openSettingsWindow() },
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
