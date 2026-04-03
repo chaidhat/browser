@@ -207,10 +207,12 @@ export default function App() {
         activeTabId: number;
         nextTabId: number;
         chatHistories: ChatHistories;
+        favicons?: Record<number, string>;
       } | null;
       if (saved?.tabs?.length) {
         dispatch({ type: 'RESTORE', state: { tabs: saved.tabs, activeTabId: saved.activeTabId, nextTabId: saved.nextTabId } });
         setChatHistories(saved.chatHistories || {});
+        if (saved.favicons) setFavicons(saved.favicons);
       } else {
         dispatch({ type: 'CREATE_TAB' });
       }
@@ -239,9 +241,10 @@ export default function App() {
         activeTabId: tabState.activeTabId,
         nextTabId: tabState.nextTabId,
         chatHistories,
+        favicons,
       });
     }, 500);
-  }, [tabState, chatHistories, initialized]);
+  }, [tabState, chatHistories, favicons, initialized]);
 
   const historySaveRef = useRef<ReturnType<typeof setTimeout>>();
   useEffect(() => {

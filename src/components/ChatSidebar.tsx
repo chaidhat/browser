@@ -96,7 +96,7 @@ export function ChatSidebar({ open }: Props) {
     <div className={`h-full bg-neutral-50 dark:bg-neutral-800 border-l border-neutral-300 dark:border-neutral-700 flex flex-col overflow-hidden transition-all duration-250 ease-in-out ${open ? 'w-[380px] min-w-[380px]' : 'w-0 min-w-0'}`}>
       <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-300 dark:border-neutral-700 font-semibold text-sm whitespace-nowrap">
         <span>AI Chat</span>
-        <span className="text-[11px] font-normal text-neutral-500 dark:text-neutral-400 bg-black/5 dark:bg-white/8 px-2 py-0.5 rounded">gpt-5.4</span>
+        <span className="text-[11px] font-normal text-neutral-500 dark:text-neutral-400 bg-black/5 dark:bg-white/8 px-2 py-0.5 rounded">gpt-5.4-mini</span>
       </div>
       <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-2.5 scrollbar-thin" ref={messagesRef}>
         {messages.map((msg, i) => {

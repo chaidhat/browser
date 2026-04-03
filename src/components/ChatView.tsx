@@ -187,6 +187,11 @@ function parseSearchToolResults(raw: string): SearchResults | null {
   try {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed.query !== 'string' || !Array.isArray(parsed.results)) return null;
+    const images = Array.isArray(parsed.images)
+      ? parsed.images
+          .filter((img: any) => img && typeof img.imageUrl === 'string' && typeof img.link === 'string')
+          .map((img: any) => ({ title: img.title || '', imageUrl: img.imageUrl, link: img.link }))
+      : undefined;
     return {
       query: parsed.query,
       results: parsed.results
@@ -196,6 +201,7 @@ function parseSearchToolResults(raw: string): SearchResults | null {
           link: r.link,
           snippet: typeof r.snippet === 'string' ? r.snippet : '',
         })),
+      images: images && images.length > 0 ? images : undefined,
     };
   } catch {
     return null;
@@ -504,8 +510,7 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
     cleanupRef.current = window.browser.chatSendStream(requestId, apiHistory, {
       onChunk(chunk: string) {
         accumulated += chunk;
-        const extracted = extractOutputFromPartialJson(accumulated);
-        setStreamingContent(extracted);
+        setStreamingContent(accumulated);
       },
       onToolCall(info: ToolCallInfo) {
         setPendingToolCalls(prev => {
@@ -533,8 +538,7 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
         onThinkingChange?.(tabId, false);
         setStreamingContent('');
 
-        const outputText = extractOutputFromPartialJson(accumulated);
-        const finalContent = outputText || accumulated;
+        const finalContent = accumulated;
         const finalMessages = applySearchResultsToMessages(msgsSnapshot, pendingSearchResultsRef.current);
         const collectedToolCalls = pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : undefined;
         const assistantMsg: DisplayMessage = { role: 'assistant', content: finalContent, durationMs: Date.now() - startTime, toolCalls: collectedToolCalls };

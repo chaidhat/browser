@@ -14,7 +14,7 @@ const selectClass = "w-full h-9 px-2 border border-neutral-300 dark:border-neutr
 const labelClass = "block text-[13px] font-medium mb-1.5 text-neutral-700 dark:text-neutral-300";
 const helpClass = "text-[11px] text-neutral-400 dark:text-neutral-500 mt-1.5";
 
-type SettingsTab = 'keys' | 'appearance' | 'data';
+type SettingsTab = 'keys' | 'openclaw' | 'appearance' | 'data';
 
 export function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('keys');
@@ -23,12 +23,16 @@ export function SettingsPage() {
   const [googleKey, setGoogleKey] = useState('');
   const [braveKey, setBraveKey] = useState('');
   const [serperKey, setSerperKey] = useState('');
+  const [openclawUrl, setOpenclawUrl] = useState('');
+  const [openclawToken, setOpenclawToken] = useState('');
   const [font, setFont] = useState<'inter' | 'pt-serif'>('pt-serif');
   const [theme, setTheme] = useState<'light' | 'sunset' | 'dark' | 'system'>('system');
   const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [isTesting, setIsTesting] = useState(false);
+  const [openclawTestResult, setOpenclawTestResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [isTestingOpenclaw, setIsTestingOpenclaw] = useState(false);
 
   useEffect(() => {
     window.browser.getSettings().then(settings => {
@@ -37,6 +41,8 @@ export function SettingsPage() {
       setGoogleKey(settings.googleKey || '');
       setBraveKey(settings.braveKey || '');
       setSerperKey(settings.serperKey || '');
+      setOpenclawUrl(settings.openclawUrl || '');
+      setOpenclawToken(settings.openclawToken || '');
       setFont(settings.font || 'pt-serif');
       setTheme(settings.theme || 'system');
       setEmailAccounts(settings.emailAccounts || []);
@@ -103,6 +109,8 @@ export function SettingsPage() {
       googleKey: googleKey.trim(),
       braveKey: braveKey.trim(),
       serperKey: serperKey.trim(),
+      openclawUrl: openclawUrl.trim(),
+      openclawToken: openclawToken.trim(),
       font,
       theme,
       emailAccounts,
@@ -112,6 +120,7 @@ export function SettingsPage() {
 
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: 'keys', label: 'Keys' },
+    { id: 'openclaw', label: 'OpenClaw' },
     { id: 'appearance', label: 'Appearance' },
     { id: 'data', label: 'Data' },
   ];
@@ -166,6 +175,60 @@ export function SettingsPage() {
                 <label htmlFor="serper-key-input" className={labelClass}>Serper API Key</label>
                 <input type="password" id="serper-key-input" className={inputClass} placeholder="..." spellCheck={false} autoComplete="off" value={serperKey} onChange={(e) => setSerperKey(e.target.value)} />
                 <p className={helpClass}>Pre-fetches search results for chat queries. Get a key at serper.dev</p>
+              </div>
+            </>
+          )}
+
+          {activeTab === 'openclaw' && (
+            <>
+              <div className="mb-5">
+                <label htmlFor="openclaw-url-input" className={labelClass}>Server URL</label>
+                <input type="text" id="openclaw-url-input" className={inputClass} placeholder="http://192.168.1.100:18789" spellCheck={false} autoComplete="off" value={openclawUrl} onChange={(e) => setOpenclawUrl(e.target.value)} />
+                <p className={helpClass}>The IP and port of your OpenClaw server (default port is 18789).</p>
+              </div>
+              <div className="mb-5">
+                <label htmlFor="openclaw-token-input" className={labelClass}>Gateway Token</label>
+                <input type="password" id="openclaw-token-input" className={inputClass} placeholder="your-gateway-token" spellCheck={false} autoComplete="off" value={openclawToken} onChange={(e) => setOpenclawToken(e.target.value)} />
+                <p className={helpClass}>The Bearer token you configured for your OpenClaw gateway.</p>
+              </div>
+              <div className="mb-5">
+                <button
+                  className={`h-9 px-4 rounded-lg text-[13px] font-medium cursor-pointer transition-colors border-none ${
+                    isTestingOpenclaw
+                      ? 'bg-neutral-200 dark:bg-neutral-700 text-neutral-500 cursor-not-allowed'
+                      : 'bg-black dark:bg-white text-white dark:text-black hover:bg-neutral-800 dark:hover:bg-neutral-200'
+                  }`}
+                  disabled={isTestingOpenclaw || !openclawUrl.trim()}
+                  onClick={async () => {
+                    setIsTestingOpenclaw(true);
+                    setOpenclawTestResult(null);
+                    try {
+                      const baseUrl = openclawUrl.trim().replace(/\/+$/, '');
+                      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+                      if (openclawToken.trim()) headers['Authorization'] = `Bearer ${openclawToken.trim()}`;
+                      const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+                        method: 'POST',
+                        headers: { ...headers, 'x-openclaw-agent-id': 'main' },
+                        body: JSON.stringify({ model: 'openclaw', messages: [{ role: 'user', content: 'ping' }] }),
+                      });
+                      if (res.ok) {
+                        setOpenclawTestResult({ type: 'success', message: 'Connected to OpenClaw server' });
+                      } else {
+                        setOpenclawTestResult({ type: 'error', message: `Server returned ${res.status} ${res.statusText}` });
+                      }
+                    } catch (err: unknown) {
+                      setOpenclawTestResult({ type: 'error', message: err instanceof Error ? err.message : 'Connection failed' });
+                    }
+                    setIsTestingOpenclaw(false);
+                  }}
+                >
+                  {isTestingOpenclaw ? 'Testing...' : 'Test Connection'}
+                </button>
+                {openclawTestResult && (
+                  <p className={`text-[12px] mt-2 ${openclawTestResult.type === 'success' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                    {openclawTestResult.message}
+                  </p>
+                )}
               </div>
             </>
           )}

@@ -26,6 +26,8 @@ export interface Settings {
   googleKey: string;
   braveKey: string;
   serperKey: string;
+  openclawUrl: string;
+  openclawToken: string;
   emailAccounts: EmailAccount[];
   font: 'inter' | 'pt-serif';
   theme: 'light' | 'sunset' | 'dark' | 'system';
