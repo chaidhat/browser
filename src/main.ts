@@ -47,6 +47,19 @@ function saveSettings(settings: Settings): void {
 
 let mainWindow: BrowserWindow | null = null;
 
+function updateAppIcon(): void {
+  if (process.platform !== 'darwin' || !mainWindow) return;
+  const icnsName = 'icon_dark.icns';
+  const icnsPath = app.isPackaged
+    ? path.join(process.resourcesPath, icnsName)
+    : path.join(__dirname, '..', 'icon', icnsName);
+  console.log('Setting icon:', icnsPath, 'exists:', fs.existsSync(icnsPath));
+  if (fs.existsSync(icnsPath)) {
+    mainWindow.setIcon(icnsPath);
+    app.dock?.setIcon(icnsPath);
+  }
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -64,6 +77,10 @@ function createWindow(): void {
   });
 
   mainWindow.loadFile(path.join(__dirname, '..', 'ui', 'index.html'));
+
+  // Set dock icon based on theme and update when it changes
+  updateAppIcon();
+  nativeTheme.on('updated', updateAppIcon);
 
   // Intercept Cmd+T and Cmd+F from the main window itself (e.g., when focus is in a text input)
   mainWindow.webContents.on('before-input-event', (event, input) => {

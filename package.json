@@ -13,6 +13,7 @@
   "build": {
     "appId": "com.pause.browser",
     "productName": "Pause",
+    "afterPack": "./build/afterPack.js",
     "mac": {
       "target": "dmg",
       "icon": "build/icon.icns",
@@ -42,6 +43,10 @@
     "files": [
       "dist/**/*",
       "ui/**/*"
+    ],
+    "extraResources": [
+      { "from": "icon/icon_dark.icns", "to": "icon_dark.icns" },
+      { "from": "icon/icon_light.icns", "to": "icon_light.icns" }
     ],
     "directories": {
       "output": "release"

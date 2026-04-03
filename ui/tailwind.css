@@ -54,15 +54,6 @@ html, body, #root {
   animation: progress-complete 0.3s ease-in-out forwards;
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-.stream-fade-in {
-  animation: fadeIn 0.5s ease-out forwards;
-}
-
 @utility scrollbar-thin {
   &::-webkit-scrollbar {
     width: 6px;

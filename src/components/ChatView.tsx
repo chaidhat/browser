@@ -207,9 +207,6 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   const cleanupRef = useRef<(() => void) | null>(null);
   const currentRequestIdRef = useRef<string | null>(null);
   const thinkingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const prevRenderedRef = useRef<string>('');
-  const streamBufferRef = useRef<string>('');
-  const streamFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
 
   const acSuggestions = useMemo(() => {
@@ -446,9 +443,6 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     setIsTyping(true);
     onThinkingChange?.(tabId, true);
     setStreamingContent('');
-    prevRenderedRef.current = '';
-    streamBufferRef.current = '';
-    if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
     let accumulated = '';
     const requestId = `chat-${tabId}-${nextRequestId++}`;
     currentRequestIdRef.current = requestId;
@@ -456,28 +450,17 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     const startTime = Date.now();
     const userQuery = text;
 
-    const STREAM_DEBOUNCE_MS = 500;
-
     cleanupRef.current = window.browser.chatSendStream(requestId, apiHistory, {
       onChunk(chunk: string) {
         accumulated += chunk;
         const extracted = extractOutputFromPartialJson(accumulated);
-        streamBufferRef.current = extracted;
-        // Debounce DOM updates so fade animations can complete
-        if (!streamFlushTimerRef.current) {
-          streamFlushTimerRef.current = setTimeout(() => {
-            streamFlushTimerRef.current = null;
-            setStreamingContent(streamBufferRef.current);
-          }, STREAM_DEBOUNCE_MS);
-        }
+        setStreamingContent(extracted);
       },
       onDone() {
-        if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
         setIsTyping(false);
         onThinkingChange?.(tabId, false);
         setStreamingContent('');
-        prevRenderedRef.current = '';
-
+    
         // Parse the final JSON to get output and shouldShowSerper
         const outputText = extractOutputFromPartialJson(accumulated);
         const finalContent = outputText || accumulated;
@@ -514,12 +497,10 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
         cleanupRef.current = null;
       },
       onError(error: string) {
-        if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
         setIsTyping(false);
         onThinkingChange?.(tabId, false);
         setStreamingContent('');
-        prevRenderedRef.current = '';
-        onMessagesChange(tabId, [...msgsSnapshot, { role: 'error', content: error }]);
+            onMessagesChange(tabId, [...msgsSnapshot, { role: 'error', content: error }]);
         cleanupRef.current = null;
       },
     }, selectedModel);
@@ -786,41 +767,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             streamingContent ? (
               <div
                 className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-[15px] leading-relaxed max-w-[90%] break-words text-black dark:text-neutral-200 self-start"
-                               dangerouslySetInnerHTML={{ __html: renderContent(streamingContent) }}
-                ref={(el) => {
-                  if (!el) return;
-                  const prevLen = prevRenderedRef.current.length;
-                  const curLen = streamingContent.length;
-                  if (curLen <= prevLen) { prevRenderedRef.current = streamingContent; return; }
-                  // Walk all text nodes and find where new content starts
-                  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-                  let charCount = 0;
-                  let node: Text | null;
-                  while ((node = walker.nextNode() as Text | null)) {
-                    const nodeLen = node.textContent?.length || 0;
-                    const nodeEnd = charCount + nodeLen;
-                    if (nodeEnd > prevLen && node.parentElement) {
-                      // This text node contains new characters
-                      const newStart = Math.max(0, prevLen - charCount);
-                      if (newStart === 0 && !node.parentElement.classList.contains('stream-fade-in')) {
-                        // Entire node is new — wrap it
-                        const wrapper = document.createElement('span');
-                        wrapper.className = 'stream-fade-in';
-                        node.parentElement.insertBefore(wrapper, node);
-                        wrapper.appendChild(node);
-                      } else if (newStart > 0) {
-                        // Split the text node — only the tail is new
-                        const newNode = node.splitText(newStart);
-                        const wrapper = document.createElement('span');
-                        wrapper.className = 'stream-fade-in';
-                        newNode.parentElement!.insertBefore(wrapper, newNode);
-                        wrapper.appendChild(newNode);
-                      }
-                    }
-                    charCount = nodeEnd;
-                  }
-                  prevRenderedRef.current = streamingContent;
-                }}
+                dangerouslySetInnerHTML={{ __html: renderContent(streamingContent) }}
               />
             ) : (
               <div className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] self-start bg-transparent text-neutral-400" >
