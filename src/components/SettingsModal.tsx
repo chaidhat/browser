@@ -26,6 +26,7 @@ export function SettingsModal({ onClose, activeUrl, onClearHistory }: Props) {
   const [googleKey, setGoogleKey] = useState('');
   const [braveKey, setBraveKey] = useState('');
   const [serperKey, setSerperKey] = useState('');
+  const [font, setFont] = useState<'inter' | 'pt-serif'>('pt-serif');
   const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -38,6 +39,7 @@ export function SettingsModal({ onClose, activeUrl, onClearHistory }: Props) {
       setGoogleKey(settings.googleKey || '');
       setBraveKey(settings.braveKey || '');
       setSerperKey(settings.serperKey || '');
+      setFont(settings.font || 'pt-serif');
       setEmailAccounts(settings.emailAccounts || []);
     });
   }, []);
@@ -102,6 +104,7 @@ export function SettingsModal({ onClose, activeUrl, onClearHistory }: Props) {
       googleKey: googleKey.trim(),
       braveKey: braveKey.trim(),
       serperKey: serperKey.trim(),
+      font,
       emailAccounts,
     });
     onClose();
@@ -192,6 +195,27 @@ export function SettingsModal({ onClose, activeUrl, onClearHistory }: Props) {
             onChange={(e) => setSerperKey(e.target.value)}
           />
           <p className={helpClass}>Pre-fetches search results for chat queries. Get a key at serper.dev</p>
+        </div>
+
+        {/* Font */}
+        <div className="mb-5 pt-4 border-t border-neutral-200 dark:border-neutral-700">
+          <label className={labelClass}>Font</label>
+          <div className="flex gap-2">
+            <button
+              className={`flex-1 px-3 py-2 rounded-lg border text-[13px] cursor-pointer transition-colors ${font === 'inter' ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium' : 'border-neutral-200 dark:border-neutral-700 bg-transparent text-neutral-600 dark:text-neutral-400 hover:bg-black/5 dark:hover:bg-white/5'}`}
+              style={{ fontFamily: 'Inter, sans-serif' }}
+              onClick={() => setFont('inter')}
+            >
+              Inter
+            </button>
+            <button
+              className={`flex-1 px-3 py-2 rounded-lg border text-[13px] cursor-pointer transition-colors ${font === 'pt-serif' ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium' : 'border-neutral-200 dark:border-neutral-700 bg-transparent text-neutral-600 dark:text-neutral-400 hover:bg-black/5 dark:hover:bg-white/5'}`}
+              style={{ fontFamily: "'PT Serif', serif" }}
+              onClick={() => setFont('pt-serif')}
+            >
+              PT Serif
+            </button>
+          </div>
         </div>
 
         {/* Email Accounts */}

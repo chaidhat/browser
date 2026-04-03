@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { FiChevronLeft, FiChevronRight, FiRefreshCw, FiMessageSquare, FiSettings } from 'react-icons/fi';
+import { FiChevronLeft, FiChevronRight, FiRefreshCw, FiMessageSquare, FiSettings, FiSidebar } from 'react-icons/fi';
 import { resolveUrl, isUrl } from '../utils/navigate';
 import { rankedDomains } from '../utils/rankedDomains';
 
@@ -32,6 +32,8 @@ interface Props {
   onForward: () => void;
   onReload: () => void;
   onToggleChat: () => void;
+  onToggleTabSidebar: () => void;
+  tabSidebarOpen: boolean;
   onOpenSettings: () => void;
   isChatTab?: boolean;
   allTabs?: TabInfo[];
@@ -49,10 +51,21 @@ function splitUrl(url: string): { before: string; domain: string; after: string 
 export function Toolbar({
   activeUrl, loading, sidebarOpen,
   onNavigate, onSearch, onBack, onForward, onReload,
-  onToggleChat, onOpenSettings, isChatTab,
+  onToggleChat, onToggleTabSidebar, tabSidebarOpen, onOpenSettings, isChatTab,
   allTabs = [], visitHistory = [],
 }: Props) {
   const [urlValue, setUrlValue] = useState(activeUrl);
+  const [progressState, setProgressState] = useState<'idle' | 'loading' | 'completing'>('idle');
+
+  useEffect(() => {
+    if (loading) {
+      if (progressState === 'idle') {
+        setProgressState('loading');
+      }
+    } else if (progressState === 'loading') {
+      setProgressState('completing');
+    }
+  }, [loading]);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [showDropdown, setShowDropdown] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
@@ -215,8 +228,15 @@ export function Toolbar({
   };
 
   return (
-    <div className="flex items-center h-12 px-3 gap-2 bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700 drag">
+    <div className={`relative flex items-center h-12 gap-2 bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700 drag pr-3 ${tabSidebarOpen ? 'pl-3' : 'pl-[88px]'}`} style={{ transition: 'padding-left 200ms ease-in-out' }}>
       <div className="flex gap-0.5 no-drag">
+        <button
+          className={`${btnClass} ${tabSidebarOpen ? 'bg-black/10 dark:bg-white/12 text-black dark:text-neutral-200' : ''}`}
+          title="Toggle Sidebar"
+          onClick={onToggleTabSidebar}
+        >
+          <FiSidebar size={15} />
+        </button>
         <button className={btnClass} title="Back" onClick={onBack}>
           <FiChevronLeft size={16} />
         </button>
@@ -231,7 +251,7 @@ export function Toolbar({
         <input
           ref={inputRef}
           type="text"
-          className={`w-full h-8 px-3.5 border-none rounded-lg bg-neutral-100 dark:bg-neutral-900 text-[13px] outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500 ${isFocused ? 'text-black dark:text-neutral-200' : 'text-transparent'} ${loading ? 'bg-[length:200%_100%] animate-loading bg-gradient-to-r from-white via-neutral-100 to-white dark:from-neutral-700 dark:via-neutral-600 dark:to-neutral-700' : ''}`}
+          className={`w-full h-8 px-3.5 border-none rounded-lg bg-neutral-100 dark:bg-neutral-900 text-[13px] outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500 ${isFocused ? 'text-black dark:text-neutral-200' : 'text-transparent'}`}
           placeholder="Search or enter URL"
           spellCheck={false}
           autoComplete="off"
@@ -295,6 +315,15 @@ export function Toolbar({
           </button>
         )}
       </div>
+      {/* Safari-style progress bar */}
+      {progressState !== 'idle' && (
+        <div className="absolute -bottom-[1px] left-0 right-0 h-[2px] overflow-hidden z-10">
+          <div
+            className={`h-full bg-blue-500 ${progressState === 'completing' ? 'animate-progress-complete' : 'animate-progress-bar'}`}
+            onAnimationEnd={() => { if (progressState === 'completing') setProgressState('idle'); }}
+          />
+        </div>
+      )}
     </div>
   );
 }

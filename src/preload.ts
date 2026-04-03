@@ -27,6 +27,7 @@ export interface Settings {
   braveKey: string;
   serperKey: string;
   emailAccounts: EmailAccount[];
+  font: 'inter' | 'pt-serif';
 }
 
 export interface SerperResult {
@@ -90,6 +91,7 @@ export interface BrowserAPI {
   onDownloadProgress: (callback: (event: DownloadProgressEvent) => void) => void;
   onDownloadDone: (callback: (event: DownloadDoneEvent) => void) => void;
   showInFolder: (filePath: string) => void;
+  showContextMenu: (items: { label: string; id: string }[]) => Promise<string | null>;
   serperSearch: (query: string) => Promise<SerperResult[] | null>;
   serperImageSearch: (query: string) => Promise<SerperImageResult[] | null>;
   testImap: (account: EmailAccount) => Promise<{ success: boolean; messageCount?: number; sample?: { subject: string; from: string }[]; error?: string }>;
@@ -97,7 +99,7 @@ export interface BrowserAPI {
   findInPage: (webContentsId: number, text: string, forward: boolean) => void;
   stopFindInPage: (webContentsId: number) => void;
   onFoundInPageResult: (callback: (activeMatch: number, totalMatches: number) => void) => void;
-  onShortcutFromWebview: (callback: (key: string) => void) => void;
+  onShortcutFromWebview: (callback: (key: string, alt: boolean) => void) => void;
 }
 
 contextBridge.exposeInMainWorld('browser', {
@@ -158,6 +160,7 @@ contextBridge.exposeInMainWorld('browser', {
   showInFolder: (filePath: string) => {
     ipcRenderer.send('show-in-folder', filePath);
   },
+  showContextMenu: (items: { label: string; id: string }[]) => ipcRenderer.invoke('show-context-menu', items) as Promise<string | null>,
   serperSearch: (query: string) => ipcRenderer.invoke('serper-search', query),
   serperImageSearch: (query: string) => ipcRenderer.invoke('serper-image-search', query),
   testImap: (account: EmailAccount) => ipcRenderer.invoke('test-imap', account),
@@ -173,7 +176,7 @@ contextBridge.exposeInMainWorld('browser', {
       callback(activeMatch, totalMatches);
     });
   },
-  onShortcutFromWebview: (callback: (key: string) => void) => {
-    ipcRenderer.on('shortcut-from-webview', (_event, key: string) => callback(key));
+  onShortcutFromWebview: (callback: (key: string, alt: boolean) => void) => {
+    ipcRenderer.on('shortcut-from-webview', (_event, key: string, alt: boolean) => callback(key, alt));
   },
 } satisfies BrowserAPI);

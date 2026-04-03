@@ -12,6 +12,7 @@ interface Props {
   onSwitch: (id: number) => void;
   onClose: (id: number) => void;
   onCreate: () => void;
+  onDuplicate: (id: number) => void;
   onReorder: (tabs: TabInfo[]) => void;
   onOpenSettings: () => void;
 }
@@ -25,7 +26,7 @@ function Spinner() {
   );
 }
 
-export function TabSidebar({ tabs, activeTabId, loadingTabs, favicons, thinkingTabs, unreadTabs, onSwitch, onClose, onCreate, onReorder, onOpenSettings }: Props) {
+export function TabSidebar({ tabs, activeTabId, loadingTabs, favicons, thinkingTabs, unreadTabs, onSwitch, onClose, onCreate, onDuplicate, onReorder, onOpenSettings }: Props) {
   const [dragId, setDragId] = useState<number | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: number; position: 'before' | 'after' } | null>(null);
   const dragNodeRef = useRef<HTMLDivElement | null>(null);
@@ -73,7 +74,7 @@ export function TabSidebar({ tabs, activeTabId, loadingTabs, favicons, thinkingT
   };
 
   return (
-    <div className="w-[200px] h-full bg-transparent flex flex-col p-2 pt-[44px] gap-0.5 shrink-0 border-r border-black/10 dark:border-white/8 relative drag">
+    <div className="w-[200px] h-full bg-transparent flex flex-col p-2 pt-[44px] gap-0.5 shrink-0 relative drag border-r border-black/10 dark:border-white/8">
       <div className="absolute top-0 left-0 right-0 h-[38px] drag" />
       <div className="flex flex-col gap-0.5 overflow-y-auto overflow-x-hidden flex-1 min-h-0 no-drag scrollbar-thin">
         {tabs.map(tab => {
@@ -102,6 +103,16 @@ export function TabSidebar({ tabs, activeTabId, loadingTabs, favicons, thinkingT
                     ? 'bg-white/60 dark:bg-white/12 text-black dark:text-neutral-200'
                     : 'text-neutral-500 dark:text-neutral-400 hover:bg-black/5 dark:hover:bg-white/6'
                   }`}
+                onContextMenu={async (e) => {
+                  e.preventDefault();
+                  const items = [
+                    ...(tab.type !== 'chat' ? [{ label: 'Duplicate Tab', id: 'duplicate' }] : []),
+                    { label: 'Close Tab', id: 'close' },
+                  ];
+                  const action = await window.browser.showContextMenu(items);
+                  if (action === 'duplicate') onDuplicate(tab.id);
+                  else if (action === 'close') onClose(tab.id);
+                }}
                 onClick={(e) => {
                   if (!(e.target as HTMLElement).closest('.tab-close-btn')) {
                     onSwitch(tab.id);

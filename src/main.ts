@@ -25,6 +25,7 @@ interface Settings {
   braveKey: string;
   serperKey: string;
   emailAccounts: EmailAccount[];
+  font: 'inter' | 'pt-serif';
 }
 
 const settingsPath = path.join(app.getPath('userData'), 'settings.json');
@@ -34,9 +35,9 @@ const historyPath = path.join(app.getPath('userData'), 'history.json');
 function loadSettings(): Settings {
   try {
     const data = fs.readFileSync(settingsPath, 'utf-8');
-    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', emailAccounts: [], ...JSON.parse(data) };
+    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', emailAccounts: [], font: 'pt-serif', ...JSON.parse(data) };
   } catch {
-    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', emailAccounts: [] };
+    return { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', emailAccounts: [], font: 'pt-serif' };
   }
 }
 
@@ -51,7 +52,7 @@ function createWindow(): void {
     width: 1280,
     height: 900,
     titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 12, y: 12 },
+    trafficLightPosition: { x: 17, y: 17 },
     transparent: true,
     vibrancy: 'sidebar',
     webPreferences: {
@@ -66,9 +67,14 @@ function createWindow(): void {
 
   // Intercept Cmd+T and Cmd+F from the main window itself (e.g., when focus is in a text input)
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.meta && (input.key === 't' || input.key === 'f') && input.type === 'keyDown') {
-      event.preventDefault();
-      mainWindow?.webContents.send('shortcut-from-webview', input.key);
+    if (input.meta && input.type === 'keyDown') {
+      if (input.key === 't' && !input.alt || input.key === 'f') {
+        event.preventDefault();
+        mainWindow?.webContents.send('shortcut-from-webview', input.key, false);
+      } else if (input.alt && (input.key === 't' || input.key === '†' || input.key === 'ArrowUp' || input.key === 'ArrowDown')) {
+        event.preventDefault();
+        mainWindow?.webContents.send('shortcut-from-webview', input.key, true);
+      }
     }
   });
 
@@ -188,9 +194,14 @@ function createWindow(): void {
 
     // Intercept Cmd+T and Cmd+F from webview so the app always handles them
     webContents.on('before-input-event', (event, input) => {
-      if (input.meta && (input.key === 't' || input.key === 'f') && input.type === 'keyDown') {
-        event.preventDefault();
-        mainWindow?.webContents.send('shortcut-from-webview', input.key);
+      if (input.meta && input.type === 'keyDown') {
+        if (input.key === 't' && !input.alt || input.key === 'f') {
+          event.preventDefault();
+          mainWindow?.webContents.send('shortcut-from-webview', input.key, false);
+        } else if (input.alt && (input.key === 't' || input.key === '†' || input.key === 'ArrowUp' || input.key === 'ArrowDown')) {
+          event.preventDefault();
+          mainWindow?.webContents.send('shortcut-from-webview', input.key, true);
+        }
       }
     });
 
@@ -352,6 +363,22 @@ ipcMain.on('stop-find-in-page', (_event, webContentsId: number) => {
   if (target) {
     target.stopFindInPage('clearSelection');
   }
+});
+
+// Native context menu IPC
+ipcMain.handle('show-context-menu', (_event, items: { label: string; id: string }[]) => {
+  return new Promise<string | null>((resolve) => {
+    const menu = Menu.buildFromTemplate(
+      items.map(item => ({
+        label: item.label,
+        click: () => resolve(item.id),
+      }))
+    );
+    menu.popup({
+      window: mainWindow || undefined,
+      callback: () => resolve(null),
+    });
+  });
 });
 
 // Serper Search IPC

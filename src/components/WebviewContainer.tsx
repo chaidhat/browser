@@ -104,11 +104,14 @@ export const WebviewContainer = forwardRef<WebviewContainerHandle, Props>(
           const onPageTitleUpdated = (e: any) => {
             onTabUpdate(tabId, { title: e.title });
           };
+          let stopTimer: ReturnType<typeof setTimeout> | undefined;
           const onDidStartLoading = () => {
+            if (stopTimer) { clearTimeout(stopTimer); stopTimer = undefined; }
             onLoadingChange(tabId, true);
           };
           const onDidStopLoading = () => {
-            onLoadingChange(tabId, false);
+            if (stopTimer) clearTimeout(stopTimer);
+            stopTimer = setTimeout(() => onLoadingChange(tabId, false), 500);
           };
           const onPageFaviconUpdated = (e: any) => {
             if (e.favicons && e.favicons.length > 0) {
