@@ -8,6 +8,50 @@ import { SettingsModal } from './components/SettingsModal';
 import { DownloadBar, DownloadItem } from './components/DownloadBar';
 import { FindBar } from './components/FindBar';
 
+function playNotificationTone() {
+  // Generate a WAV in memory: C5 for 0.5s then A5 for 0.5s
+  const sampleRate = 44100;
+  const totalSamples = sampleRate * 1;
+  const notes = [
+    { freq: 880, startSample: 0, endSample: sampleRate * 1.0 },
+  ];
+  const samples = new Float32Array(totalSamples);
+  for (const note of notes) {
+    for (let i = Math.floor(note.startSample); i < Math.floor(note.endSample); i++) {
+      const t = (i - note.startSample) / sampleRate;
+      const duration = (note.endSample - note.startSample) / sampleRate;
+      const envelope = Math.exp(-3 * t / duration); // fade out
+      samples[i] += 0.3 * envelope * Math.sin(2 * Math.PI * note.freq * t);
+    }
+  }
+  // Encode as 16-bit PCM WAV
+  const numSamples = samples.length;
+  const buffer = new ArrayBuffer(44 + numSamples * 2);
+  const view = new DataView(buffer);
+  const writeStr = (offset: number, str: string) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)); };
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + numSamples * 2, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, numSamples * 2, true);
+  for (let i = 0; i < numSamples; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(44 + i * 2, s * 0x7FFF, true);
+  }
+  const blob = new Blob([buffer], { type: 'audio/wav' });
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  audio.play().finally(() => { setTimeout(() => URL.revokeObjectURL(url), 2000); });
+}
+
 interface TabState {
   tabs: TabInfo[];
   activeTabId: number;
@@ -22,6 +66,7 @@ type TabAction =
   | { type: 'SWITCH_TAB'; id: number }
   | { type: 'UPDATE_TAB'; id: number; title?: string; url?: string }
   | { type: 'CONVERT_TAB'; id: number; url: string }
+  | { type: 'DUPLICATE_TAB'; id: number }
   | { type: 'REORDER_TABS'; tabs: TabInfo[] }
   | { type: 'RESTORE'; state: TabState };
 
@@ -93,6 +138,16 @@ function tabReducer(state: TabState, action: TabAction): TabState {
         ),
       };
     }
+    case 'DUPLICATE_TAB': {
+      const srcTab = state.tabs.find(t => t.id === action.id);
+      if (!srcTab) return state;
+      const newId = state.nextTabId;
+      const newTab: TabInfo = { ...srcTab, id: newId };
+      const idx = state.tabs.findIndex(t => t.id === action.id);
+      const newTabs = [...state.tabs];
+      newTabs.splice(idx + 1, 0, newTab);
+      return { tabs: newTabs, activeTabId: newId, nextTabId: newId + 1 };
+    }
     case 'REORDER_TABS': {
       return { ...state, tabs: action.tabs };
     }
@@ -112,7 +167,9 @@ export default function App() {
   });
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [tabSidebarOpen, setTabSidebarOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [font, setFont] = useState<'inter' | 'pt-serif'>('pt-serif');
   const [loadingTabs, setLoadingTabs] = useState<Record<number, boolean>>({});
   const [favicons, setFavicons] = useState<Record<number, string>>({});
   const [chatHistories, setChatHistories] = useState<ChatHistories>({});
@@ -139,6 +196,12 @@ export default function App() {
   }, [activeTab?.title, activeTab?.id]);
 
   useEffect(() => {
+    const ff = font === 'inter' ? 'Inter, sans-serif' : "'PT Serif', serif";
+    document.documentElement.style.fontFamily = ff;
+    document.body.style.fontFamily = ff;
+  }, [font]);
+
+  useEffect(() => {
     (async () => {
       const saved = await window.browser.loadTabs() as {
         tabs: TabInfo[];
@@ -154,6 +217,8 @@ export default function App() {
       }
       const savedHistory = await window.browser.loadHistory();
       if (savedHistory?.length) setVisitHistory(savedHistory);
+      const settings = await window.browser.getSettings();
+      setFont(settings.font || 'pt-serif');
       setInitialized(true);
     })();
   }, []);
@@ -231,9 +296,12 @@ export default function App() {
 
   const handleThinkingChange = useCallback((tabId: number, thinking: boolean) => {
     setThinkingTabs(prev => ({ ...prev, [tabId]: thinking }));
-    // When thinking stops (response done) and tab isn't active, mark unread
-    if (!thinking && tabId !== activeTabIdRef.current) {
-      setUnreadTabs(prev => ({ ...prev, [tabId]: true }));
+    if (!thinking) {
+      playNotificationTone();
+      // Mark unread if tab isn't active
+      if (tabId !== activeTabIdRef.current) {
+        setUnreadTabs(prev => ({ ...prev, [tabId]: true }));
+      }
     }
   }, []);
 
@@ -278,10 +346,11 @@ export default function App() {
     });
 
     // Forward Cmd+T/F intercepted from webview to our document keydown handler
-    window.browser.onShortcutFromWebview((key: string) => {
+    window.browser.onShortcutFromWebview((key: string, alt: boolean) => {
       document.dispatchEvent(new KeyboardEvent('keydown', {
         key,
         metaKey: true,
+        altKey: alt,
         bubbles: true,
       }));
     });
@@ -289,7 +358,10 @@ export default function App() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.metaKey && e.key === 't') {
+      if (e.metaKey && e.altKey && (e.key === 't' || e.key === '†' || e.code === 'KeyT')) {
+        e.preventDefault();
+        setTabSidebarOpen(prev => !prev);
+      } else if (e.metaKey && e.key === 't') {
         e.preventDefault();
         dispatch({ type: 'CREATE_TAB' });
       } else if (e.metaKey && e.key === 'w') {
@@ -300,6 +372,20 @@ export default function App() {
       } else if (e.metaKey && e.key === 'f') {
         e.preventDefault();
         setFindOpen(prev => !prev);
+      } else if (e.metaKey && e.altKey && e.key === 'ArrowUp') {
+        e.preventDefault();
+        const idx = tabState.tabs.findIndex(t => t.id === tabState.activeTabId);
+        if (idx > 0) {
+          dispatch({ type: 'SWITCH_TAB', id: tabState.tabs[idx - 1].id });
+          setUnreadTabs(prev => ({ ...prev, [tabState.tabs[idx - 1].id]: false }));
+        }
+      } else if (e.metaKey && e.altKey && e.key === 'ArrowDown') {
+        e.preventDefault();
+        const idx = tabState.tabs.findIndex(t => t.id === tabState.activeTabId);
+        if (idx < tabState.tabs.length - 1) {
+          dispatch({ type: 'SWITCH_TAB', id: tabState.tabs[idx + 1].id });
+          setUnreadTabs(prev => ({ ...prev, [tabState.tabs[idx + 1].id]: false }));
+        }
       } else if (e.key === 'Escape' && findOpen) {
         setFindOpen(false);
       }
@@ -447,6 +533,7 @@ export default function App() {
 
   return (
     <div className="flex h-full w-full">
+      <div className={`shrink-0 overflow-hidden transition-[width] duration-200 ease-in-out ${tabSidebarOpen ? 'w-[200px]' : 'w-0'}`}>
       <TabSidebar
         tabs={tabState.tabs}
         activeTabId={tabState.activeTabId}
@@ -460,10 +547,12 @@ export default function App() {
         }}
         onClose={handleCloseTab}
         onCreate={() => dispatch({ type: 'CREATE_TAB' })}
+        onDuplicate={(id) => dispatch({ type: 'DUPLICATE_TAB', id })}
         onReorder={(tabs) => dispatch({ type: 'REORDER_TABS', tabs })}
         onOpenSettings={() => setSettingsOpen(true)}
       />
-      <div className="flex-1 flex flex-col min-w-0 h-full bg-white dark:bg-neutral-900">
+      </div>
+      <div className="flex-1 flex flex-col min-w-0 h-full bg-white dark:bg-[#111]">
         {!isChat && (
           <Toolbar
             activeUrl={activeTab?.url || ''}
@@ -475,6 +564,8 @@ export default function App() {
             onForward={() => webviewRef.current?.goForward()}
             onReload={() => webviewRef.current?.reload()}
             onToggleChat={() => setSidebarOpen(prev => !prev)}
+            onToggleTabSidebar={() => setTabSidebarOpen(prev => !prev)}
+            tabSidebarOpen={tabSidebarOpen}
             onOpenSettings={() => setSettingsOpen(true)}
             isChatTab={isChat}
             allTabs={tabState.tabs}
@@ -525,7 +616,7 @@ export default function App() {
           onDismissAll={() => setDownloads([])}
         />
       </div>
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} activeUrl={activeTab?.url} onClearHistory={() => { setVisitHistory([]); window.browser.saveHistory([]); }} />}
+      {settingsOpen && <SettingsModal onClose={() => { setSettingsOpen(false); window.browser.getSettings().then(s => setFont(s.font || 'pt-serif')); }} activeUrl={activeTab?.url} onClearHistory={() => { setVisitHistory([]); window.browser.saveHistory([]); }} />}
     </div>
   );
 }

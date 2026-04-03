@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { FiChevronLeft, FiChevronRight, FiRefreshCw, FiMessageSquare, FiSettings } from 'react-icons/fi';
+import { FiChevronLeft, FiChevronRight, FiRefreshCw, FiMessageSquare, FiSettings, FiSidebar } from 'react-icons/fi';
 import { resolveUrl, isUrl } from '../utils/navigate';
+import { rankedDomains } from '../utils/rankedDomains';
 
 interface TabInfo {
   id: number;
@@ -31,6 +32,8 @@ interface Props {
   onForward: () => void;
   onReload: () => void;
   onToggleChat: () => void;
+  onToggleTabSidebar: () => void;
+  tabSidebarOpen: boolean;
   onOpenSettings: () => void;
   isChatTab?: boolean;
   allTabs?: TabInfo[];
@@ -48,10 +51,21 @@ function splitUrl(url: string): { before: string; domain: string; after: string 
 export function Toolbar({
   activeUrl, loading, sidebarOpen,
   onNavigate, onSearch, onBack, onForward, onReload,
-  onToggleChat, onOpenSettings, isChatTab,
+  onToggleChat, onToggleTabSidebar, tabSidebarOpen, onOpenSettings, isChatTab,
   allTabs = [], visitHistory = [],
 }: Props) {
   const [urlValue, setUrlValue] = useState(activeUrl);
+  const [progressState, setProgressState] = useState<'idle' | 'loading' | 'completing'>('idle');
+
+  useEffect(() => {
+    if (loading) {
+      if (progressState === 'idle') {
+        setProgressState('loading');
+      }
+    } else if (progressState === 'loading') {
+      setProgressState('completing');
+    }
+  }, [loading]);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [showDropdown, setShowDropdown] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
@@ -95,9 +109,50 @@ export function Toolbar({
       }
     }
 
+    // Ranked domains as fallback
+    for (const domain of rankedDomains) {
+      const url = `https://${domain}`;
+      if (seen.has(url)) continue;
+      if (domain.includes(q)) {
+        const score = domain.startsWith(q) ? 30 : 5;
+        results.push({ url, title: '', score });
+        seen.add(url);
+      }
+    }
+
     results.sort((a, b) => b.score - a.score);
     return results.slice(0, 8);
   }, [urlValue, activeUrl, allTabs, visitHistory]);
+
+  // Compute inline ghost completion — the top match whose domain starts with what user typed
+  const ghostCompletion = useMemo((): string | null => {
+    const q = urlValue.trim().toLowerCase();
+    if (!q || !isFocused) return null;
+
+    // Gather all candidate URLs from tabs + history, sorted by relevance
+    const candidates: { url: string; score: number }[] = [];
+    for (const tab of allTabs) {
+      if (tab.url && tab.type !== 'chat') candidates.push({ url: tab.url, score: 50 });
+    }
+    for (const entry of visitHistory) {
+      candidates.push({ url: entry.url, score: 40 + Math.min(entry.visitCount, 10) });
+    }
+
+    for (const c of candidates.sort((a, b) => b.score - a.score)) {
+      // Strip protocol and www, check if domain starts with query
+      const stripped = c.url.replace(/^https?:\/\/(www\.)?/, '');
+      if (stripped.toLowerCase().startsWith(q)) {
+        return stripped;
+      }
+    }
+    // Fallback to ranked domains
+    for (const domain of rankedDomains) {
+      if (domain.startsWith(q)) {
+        return domain;
+      }
+    }
+    return null;
+  }, [urlValue, isFocused, allTabs, visitHistory]);
 
   useEffect(() => {
     setShowDropdown(suggestions.length > 0);
@@ -123,16 +178,30 @@ export function Toolbar({
         setSelectedIndex(i => (i - 1 + suggestions.length) % suggestions.length);
         return;
       }
-      if (e.key === 'Tab' && selectedIndex >= 0) {
-        e.preventDefault();
-        setUrlValue(suggestions[selectedIndex].url);
-        setShowDropdown(false);
-        return;
+      if (e.key === 'Tab') {
+        if (selectedIndex >= 0) {
+          e.preventDefault();
+          setUrlValue(suggestions[selectedIndex].url);
+          setShowDropdown(false);
+          return;
+        }
+        if (ghostCompletion) {
+          e.preventDefault();
+          setUrlValue(ghostCompletion);
+          return;
+        }
       }
       if (e.key === 'Escape') {
         setShowDropdown(false);
         return;
       }
+    }
+
+    // Tab to accept ghost completion even when dropdown isn't showing
+    if (e.key === 'Tab' && ghostCompletion) {
+      e.preventDefault();
+      setUrlValue(ghostCompletion);
+      return;
     }
 
     if (e.key === 'Enter') {
@@ -147,6 +216,9 @@ export function Toolbar({
       inputRef.current?.blur();
       if (e.metaKey) {
         onNavigate(`https://www.google.com/search?q=${encodeURIComponent(value)}`);
+      } else if (ghostCompletion) {
+        // Ghost completion matched — navigate to it
+        onNavigate(resolveUrl(ghostCompletion));
       } else if (isUrl(value)) {
         onNavigate(resolveUrl(value));
       } else {
@@ -156,8 +228,15 @@ export function Toolbar({
   };
 
   return (
-    <div className="flex items-center h-12 px-3 gap-2 bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700 drag">
+    <div className={`relative flex items-center h-12 gap-2 bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700 drag pr-3 ${tabSidebarOpen ? 'pl-3' : 'pl-[88px]'}`} style={{ transition: 'padding-left 200ms ease-in-out' }}>
       <div className="flex gap-0.5 no-drag">
+        <button
+          className={`${btnClass} ${tabSidebarOpen ? 'bg-black/10 dark:bg-white/12 text-black dark:text-neutral-200' : ''}`}
+          title="Toggle Sidebar"
+          onClick={onToggleTabSidebar}
+        >
+          <FiSidebar size={15} />
+        </button>
         <button className={btnClass} title="Back" onClick={onBack}>
           <FiChevronLeft size={16} />
         </button>
@@ -172,7 +251,7 @@ export function Toolbar({
         <input
           ref={inputRef}
           type="text"
-          className={`w-full h-8 px-3.5 border-none rounded-lg bg-neutral-100 dark:bg-neutral-900 text-[13px] outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500 ${isFocused ? 'text-black dark:text-neutral-200' : 'text-transparent'} ${loading ? 'bg-[length:200%_100%] animate-loading bg-gradient-to-r from-white via-neutral-100 to-white dark:from-neutral-700 dark:via-neutral-600 dark:to-neutral-700' : ''}`}
+          className={`w-full h-8 px-3.5 border-none rounded-lg bg-neutral-100 dark:bg-neutral-900 text-[13px] outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500 ${isFocused ? 'text-black dark:text-neutral-200' : 'text-transparent'}`}
           placeholder="Search or enter URL"
           spellCheck={false}
           autoComplete="off"
@@ -182,6 +261,13 @@ export function Toolbar({
           onFocus={() => { setIsFocused(true); inputRef.current?.select(); }}
           onBlur={() => { setIsFocused(false); setTimeout(() => setShowDropdown(false), 150); }}
         />
+        {/* Inline ghost completion */}
+        {isFocused && ghostCompletion && (
+          <div className="absolute inset-0 flex items-center px-3.5 text-[13px] pointer-events-none truncate">
+            <span className="invisible">{urlValue}</span>
+            <span className="text-neutral-400 dark:text-neutral-500">{ghostCompletion.slice(urlValue.trim().length)}</span>
+          </div>
+        )}
         {!isFocused && urlValue && (() => {
           const parts = splitUrl(urlValue);
           if (parts) {
@@ -229,6 +315,15 @@ export function Toolbar({
           </button>
         )}
       </div>
+      {/* Safari-style progress bar */}
+      {progressState !== 'idle' && (
+        <div className="absolute -bottom-[1px] left-0 right-0 h-[2px] overflow-hidden z-10">
+          <div
+            className={`h-full bg-blue-500 ${progressState === 'completing' ? 'animate-progress-complete' : 'animate-progress-bar'}`}
+            onAnimationEnd={() => { if (progressState === 'completing') setProgressState('idle'); }}
+          />
+        </div>
+      )}
     </div>
   );
 }

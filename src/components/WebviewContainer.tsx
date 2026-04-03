@@ -88,6 +88,7 @@ export const WebviewContainer = forwardRef<WebviewContainerHandle, Props>(
           const wv = document.createElement('webview') as Electron.WebviewTag;
           wv.setAttribute('autosize', 'on');
           wv.setAttribute('allowpopups', '');
+          wv.setAttribute('webpreferences', 'enableBlinkFeatures=WebAuthentication');
           wv.setAttribute('useragent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
           wv.className = 'w-full h-full';
           wv.style.display = tab.id === activeTabId ? 'flex' : 'none';
@@ -103,11 +104,14 @@ export const WebviewContainer = forwardRef<WebviewContainerHandle, Props>(
           const onPageTitleUpdated = (e: any) => {
             onTabUpdate(tabId, { title: e.title });
           };
+          let stopTimer: ReturnType<typeof setTimeout> | undefined;
           const onDidStartLoading = () => {
+            if (stopTimer) { clearTimeout(stopTimer); stopTimer = undefined; }
             onLoadingChange(tabId, true);
           };
           const onDidStopLoading = () => {
-            onLoadingChange(tabId, false);
+            if (stopTimer) clearTimeout(stopTimer);
+            stopTimer = setTimeout(() => onLoadingChange(tabId, false), 500);
           };
           const onPageFaviconUpdated = (e: any) => {
             if (e.favicons && e.favicons.length > 0) {
@@ -155,6 +159,6 @@ export const WebviewContainer = forwardRef<WebviewContainerHandle, Props>(
       }
     }, [activeTabId, tabs, hidden]);
 
-    return <div className="flex-1 h-full relative" ref={containerRef} style={hidden ? { display: 'none' } : undefined} />;
+    return <div className="flex-1 h-full relative bg-white" ref={containerRef} style={hidden ? { display: 'none' } : undefined} />;
   }
 );

@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { IoClose } from 'react-icons/io5';
-import { FiArrowUp, FiArrowRight } from 'react-icons/fi';
-import { FiChevronDown } from 'react-icons/fi';
+import { FiArrowUp, FiArrowRight, FiChevronDown, FiCopy, FiCheck, FiSquare, FiEdit2, FiRefreshCw } from 'react-icons/fi';
 import { renderContent } from '../utils/renderContent';
 import type { ChatMessage, ChatContentBlock, SerperResult, SerperImageResult, HistoryEntry } from '../preload';
 import logoLight from '../assets/logo.png';
 import logoDark from '../assets/logo-dark.png';
+import { rankedDomains } from '../utils/rankedDomains';
 
 const MODELS = [
   { id: 'gpt-5.4', label: 'GPT-5.4', keyField: 'openaiKey' as const },
@@ -19,11 +19,18 @@ export interface SearchResults {
   images?: SerperImageResult[];
 }
 
+export interface PdfAttachment {
+  name: string;
+  dataUrl: string;
+}
+
 export interface DisplayMessage {
   role: 'user' | 'assistant' | 'error';
   content: string;
   images?: string[];
+  pdfs?: PdfAttachment[];
   searchResults?: SearchResults;
+  durationMs?: number;
 }
 
 interface Props {
@@ -54,6 +61,127 @@ function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
+function CopyButton({ text, className = '' }: { text: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setCopied(false), 10000);
+  };
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+  return (
+    <button
+      onClick={handleCopy}
+      className={`border-none bg-transparent cursor-pointer p-1 rounded transition-colors text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300 ${className}`}
+      title={copied ? 'Copied!' : 'Copy'}
+    >
+      {copied ? <FiCheck size={14} /> : <FiCopy size={14} />}
+    </button>
+  );
+}
+
+function RetryButton({ index, onRetry }: { index: number; onRetry: (idx: number, modelId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(prev => !prev)}
+        className="border-none bg-transparent cursor-pointer p-1 rounded transition-colors text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
+        title="Retry with different model"
+      >
+        <FiRefreshCw size={14} />
+      </button>
+      {open && (
+        <div className="absolute bottom-full left-0 mb-1 z-50 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-lg overflow-hidden">
+          {MODELS.map(m => (
+            <button
+              key={m.id}
+              onClick={() => { setOpen(false); onRetry(index, m.id); }}
+              className="block w-full text-left px-3 py-1.5 border-none bg-transparent cursor-pointer text-[12px] text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700 transition-colors whitespace-nowrap"
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatDuration(ms: number): string {
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  return `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s`;
+}
+
+/** Extract the "output" string value from a partial/complete JSON like {"output":"...","shouldShowSerper":...} */
+function extractOutputFromPartialJson(raw: string): string {
+  // Find the start of the output value
+  const keyPatterns = ['"output":"', '"output": "', '"output" : "'];
+  let startIdx = -1;
+  let patternLen = 0;
+  for (const p of keyPatterns) {
+    const idx = raw.indexOf(p);
+    if (idx !== -1 && (startIdx === -1 || idx < startIdx)) {
+      startIdx = idx;
+      patternLen = p.length;
+    }
+  }
+  if (startIdx === -1) return ''; // Haven't streamed the output key yet
+  const valueStart = startIdx + patternLen;
+  // Walk the string handling escape sequences to find the closing quote
+  let result = '';
+  let i = valueStart;
+  while (i < raw.length) {
+    if (raw[i] === '\\') {
+      if (i + 1 >= raw.length) break; // Incomplete escape at end of buffer — wait for more data
+      const next = raw[i + 1];
+      if (next === '"') { result += '"'; i += 2; }
+      else if (next === 'n') { result += '\n'; i += 2; }
+      else if (next === 't') { result += '\t'; i += 2; }
+      else if (next === '\\') { result += '\\'; i += 2; }
+      else if (next === '/') { result += '/'; i += 2; }
+      else if (next === 'r') { i += 2; } // Skip \r
+      else if (next === 'u') {
+        // Unicode escape \uXXXX
+        if (i + 6 > raw.length) break; // Incomplete unicode escape — wait for more data
+        const hex = raw.substring(i + 2, i + 6);
+        result += String.fromCharCode(parseInt(hex, 16));
+        i += 6;
+      } else { result += next; i += 2; }
+    } else if (raw[i] === '"') {
+      break; // End of string value
+    } else {
+      result += raw[i];
+      i++;
+    }
+  }
+  return result;
+}
+
+/** Parse shouldShowSerper from completed JSON response */
+function parseShouldShowSerper(raw: string): boolean {
+  try {
+    const parsed = JSON.parse(raw);
+    return !!parsed.shouldShowSerper;
+  } catch {
+    // Try regex fallback for malformed JSON
+    const match = raw.match(/"shouldShowSerper"\s*:\s*(true|false)/);
+    return match?.[1] === 'true';
+  }
+}
+
 let nextRequestId = 0;
 
 export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, onTitleChange, onNavigate, onOpenLink, onThinkingChange, initialQuery, onInitialQueryConsumed, visitHistory = [] }: Props) {
@@ -61,6 +189,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   const [streamingContent, setStreamingContent] = useState('');
   const [inputValue, setInputValue] = useState('');
   const [pendingImages, setPendingImages] = useState<string[]>([]);
+  const [pendingPdfs, setPendingPdfs] = useState<PdfAttachment[]>([]);
   const [thinkingSeconds, setThinkingSeconds] = useState(0);
   const [selectedModel, setSelectedModel] = useState('gpt-5.4');
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -69,22 +198,29 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   const [acIndex, setAcIndex] = useState(-1);
   const [showAc, setShowAc] = useState(false);
   const [ghostSuggestion, setGhostSuggestion] = useState<string | null>(null);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const editPrevInputRef = useRef<string>('');
   const ghostRequestRef = useRef(0);
   const suggestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
+  const currentRequestIdRef = useRef<string | null>(null);
   const thinkingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const prevRenderedRef = useRef<string>('');
+  const streamBufferRef = useRef<string>('');
+  const streamFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
 
   const acSuggestions = useMemo(() => {
     if (messages.length > 0) return [];
+    if (pendingImages.length > 0 || pendingPdfs.length > 0) return [];
     const q = inputValue.trim().toLowerCase();
     if (!q) return [];
     const results: { url: string; title: string; score: number }[] = [];
     const seen = new Set<string>();
+    // Visit history first (higher priority)
     for (const entry of visitHistory) {
-      // Strip to origin (scheme + domain, no path)
       let origin: string;
       try { origin = new URL(entry.url).origin; } catch { continue; }
       if (seen.has(origin)) continue;
@@ -92,54 +228,75 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
       const domain = originLower.replace(/^https?:\/\//, '');
       const titleLower = (entry.title || '').toLowerCase();
       if (domain.includes(q) || titleLower.includes(q)) {
-        const score = domain.startsWith(q) ? 90 : 40 + Math.min(entry.visitCount, 10);
+        const score = domain.startsWith(q) ? 200 : 100 + Math.min(entry.visitCount, 10);
         results.push({ url: origin, title: entry.title, score });
         seen.add(origin);
       }
     }
+    // Ranked domains as fallback (lower priority)
+    for (const domain of rankedDomains) {
+      const url = `https://${domain}`;
+      if (seen.has(url)) continue;
+      if (domain.includes(q)) {
+        const score = domain.startsWith(q) ? 50 : 10;
+        results.push({ url, title: '', score });
+        seen.add(url);
+      }
+    }
     results.sort((a, b) => b.score - a.score);
     return results.slice(0, 6);
-  }, [inputValue, messages.length, visitHistory]);
+  }, [inputValue, messages.length, visitHistory, pendingImages.length, pendingPdfs.length]);
 
   useEffect(() => {
     setShowAc(acSuggestions.length > 0);
     setAcIndex(-1);
   }, [acSuggestions]);
 
-  // Debounced inline suggestion: Algolia when empty chat, AI when in conversation
-  const isEmpty = messages.length === 0 && !isTyping;
+  // Debounced inline suggestion: visit history when empty chat, AI when in conversation
+  const isEmpty = messages.length === 0 && !isTyping && pendingImages.length === 0 && pendingPdfs.length === 0;
+
+  // Ghost completion from visit history when isEmpty (synchronous, like Toolbar)
+  const historyGhost = useMemo((): string | null => {
+    if (!isEmpty) return null;
+    const q = inputValue.trim().toLowerCase();
+    if (!q) return null;
+    // Use the top acSuggestion to derive inline ghost text
+    if (acSuggestions.length > 0) {
+      const topUrl = acSuggestions[0].url;
+      const stripped = topUrl.replace(/^https?:\/\/(www\.)?/, '');
+      if (stripped.toLowerCase().startsWith(q)) {
+        return stripped.slice(q.length);
+      }
+    }
+    return null;
+  }, [isEmpty, inputValue, acSuggestions]);
+
   useEffect(() => {
+    if (isEmpty) {
+      // For empty chat, ghost comes from historyGhost (synchronous), not API
+      setGhostSuggestion(historyGhost);
+      return;
+    }
     if (suggestTimerRef.current) clearTimeout(suggestTimerRef.current);
     if (isTyping) { setGhostSuggestion(null); return; }
     const trimmed = inputValue.trim();
     if (trimmed.length > 0 && trimmed.length < 3) { setGhostSuggestion(null); return; }
-    // Empty chat: only Algolia (needs input)
-    if (isEmpty && !trimmed) { setGhostSuggestion(null); return; }
     const reqId = ++ghostRequestRef.current;
     suggestTimerRef.current = setTimeout(async () => {
-      if (isEmpty) {
-        // Algolia only for empty chat state
-        if (trimmed) {
-          const algoliaSuggestion = await window.browser.autocompleteSuggest(trimmed);
-          if (ghostRequestRef.current !== reqId) return;
-          setGhostSuggestion(algoliaSuggestion);
-        }
-      } else {
-        // AI autocomplete when in conversation
-        const apiMessages = messages.filter(m => m.role !== 'error').map(m => ({
-          role: m.role as 'user' | 'assistant' | 'system',
-          content: m.content,
-        }));
-        const suggestion = await window.browser.chatSuggest(apiMessages, trimmed);
-        if (ghostRequestRef.current === reqId && suggestion) {
-          setGhostSuggestion(suggestion);
-        } else if (ghostRequestRef.current === reqId) {
-          setGhostSuggestion(null);
-        }
+      // AI autocomplete when in conversation
+      const apiMessages = messages.filter(m => m.role !== 'error').map(m => ({
+        role: m.role as 'user' | 'assistant' | 'system',
+        content: m.content,
+      }));
+      const suggestion = await window.browser.chatSuggest(apiMessages, trimmed);
+      if (ghostRequestRef.current === reqId && suggestion) {
+        setGhostSuggestion(suggestion);
+      } else if (ghostRequestRef.current === reqId) {
+        setGhostSuggestion(null);
       }
     }, trimmed ? 300 : 500);
     return () => { if (suggestTimerRef.current) clearTimeout(suggestTimerRef.current); };
-  }, [inputValue, messages, isTyping, isEmpty]);
+  }, [inputValue, messages, isTyping, isEmpty, historyGhost]);
 
   const hasStreamingContent = streamingContent.length > 0;
   useEffect(() => {
@@ -205,16 +362,28 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     return () => { cleanupRef.current?.(); };
   }, []);
 
-  const addImages = useCallback(async (files: File[]) => {
+  const addFiles = useCallback(async (files: File[]) => {
     const imageFiles = files.filter(f => f.type.startsWith('image/'));
-    if (imageFiles.length === 0) return;
-    const dataUrls = await Promise.all(imageFiles.map(fileToDataUrl));
-    setPendingImages(prev => [...prev, ...dataUrls]);
+    const pdfFiles = files.filter(f => f.type === 'application/pdf');
+    if (imageFiles.length === 0 && pdfFiles.length === 0) return;
+    setGhostSuggestion(null);
+    setShowAc(false);
+    if (imageFiles.length > 0) {
+      const dataUrls = await Promise.all(imageFiles.map(fileToDataUrl));
+      setPendingImages(prev => [...prev, ...dataUrls]);
+    }
+    if (pdfFiles.length > 0) {
+      const pdfAttachments = await Promise.all(pdfFiles.map(async f => ({
+        name: f.name,
+        dataUrl: await fileToDataUrl(f),
+      })));
+      setPendingPdfs(prev => [...prev, ...pdfAttachments]);
+    }
   }, []);
 
   const sendChat = useCallback(async (overrideText?: string) => {
     const text = (overrideText ?? inputValue).trim();
-    if (!text && pendingImages.length === 0) return;
+    if (!text && pendingImages.length === 0 && pendingPdfs.length === 0) return;
 
     // If no existing messages and input looks like a URL, navigate instead of chatting
     if (messages.length === 0 && text && pendingImages.length === 0 && looksLikeUrl(text) && onNavigate) {
@@ -225,27 +394,39 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     }
 
     const images = [...pendingImages];
+    const pdfs = [...pendingPdfs];
     setInputValue('');
     setPendingImages([]);
+    setPendingPdfs([]);
     if (inputRef.current) {
       inputRef.current.style.height = 'auto';
     }
 
+    const baseMessages = editingIndex !== null ? messages.slice(0, editingIndex) : messages;
+    setEditingIndex(null);
     const newMessages: DisplayMessage[] = [
-      ...messages,
-      { role: 'user', content: text, images: images.length > 0 ? images : undefined },
+      ...baseMessages,
+      { role: 'user', content: text, images: images.length > 0 ? images : undefined, pdfs: pdfs.length > 0 ? pdfs : undefined },
     ];
     onMessagesChange(tabId, newMessages);
 
     const apiHistory: ChatMessage[] = [
-      { role: 'system', content: 'You are a helpful assistant built into a web browser. Be concise and direct in your responses. Avoid unnecessary filler or preamble. When the user asks about a topic without a specific question, search the web and return relevant links so they can explore further. Format links as markdown.' },
+      { role: 'system', content: 'You are a helpful assistant built into a web browser. Be concise and direct in your responses. Avoid unnecessary filler or preamble. Format links as markdown.\n\nYou MUST respond in this exact JSON format:\n{"output": "your response here with markdown formatting", "shouldShowSerper": true/false}\n\nshouldShowSerper should be true when the user\'s query would benefit from web search results (e.g. factual questions, current events, product lookups, how-to queries, looking up specific things like "dolphins" or "best restaurants"). Set it to false for conversational, creative, or coding tasks where search results would not help.\n\nIMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within the output string. Escape any quotes within the output with \\".' },
       ...newMessages
       .filter(m => m.role !== 'error')
       .map(m => {
-        if (m.images && m.images.length > 0) {
+        const hasAttachments = (m.images && m.images.length > 0) || (m.pdfs && m.pdfs.length > 0);
+        if (hasAttachments) {
           const content: ChatContentBlock[] = [];
-          for (const img of m.images) {
-            content.push({ type: 'image_url', image_url: { url: img, detail: 'auto' } });
+          if (m.images) {
+            for (const img of m.images) {
+              content.push({ type: 'image_url', image_url: { url: img, detail: 'auto' } });
+            }
+          }
+          if (m.pdfs) {
+            for (const pdf of m.pdfs) {
+              content.push({ type: 'file', file: { url: pdf.dataUrl, mimeType: 'application/pdf' } });
+            }
           }
           if (m.content) {
             content.push({ type: 'text', text: m.content });
@@ -265,83 +446,119 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     setIsTyping(true);
     onThinkingChange?.(tabId, true);
     setStreamingContent('');
+    prevRenderedRef.current = '';
+    streamBufferRef.current = '';
+    if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
     let accumulated = '';
     const requestId = `chat-${tabId}-${nextRequestId++}`;
+    currentRequestIdRef.current = requestId;
     const msgsSnapshot = newMessages;
+    const startTime = Date.now();
+    const userQuery = text;
 
-    // Fire Serper web + image search in parallel if user has a key and this is a text query
-    let searchResultsData: SearchResults | undefined;
-    let chatDone = false;
-    if (text && images.length === 0) {
-      const webSearch = window.browser.serperSearch(text).catch(() => null);
-      const imageSearch = window.browser.serperImageSearch(text).catch(() => null);
-
-      Promise.all([webSearch, imageSearch]).then(([results, imageResults]) => {
-        if ((results && results.length > 0) || (imageResults && imageResults.length > 0)) {
-          searchResultsData = {
-            query: text,
-            results: results || [],
-            images: imageResults || undefined,
-          };
-          // Inject search context into the API history
-          if (results && results.length > 0) {
-            const searchContext = results.map(r => `- [${r.title}](${r.link}): ${r.snippet}`).join('\n');
-            apiHistory.push({
-              role: 'system',
-              content: `Web search results for "${text}":\n${searchContext}\n\nUse these results to inform your answer. Include relevant links.`,
-            });
-          }
-          // Only update messages if chat hasn't finished/errored yet
-          if (!chatDone) {
-            const updatedMessages = [...msgsSnapshot];
-            updatedMessages[updatedMessages.length - 1] = {
-              ...updatedMessages[updatedMessages.length - 1],
-              searchResults: searchResultsData,
-            };
-            onMessagesChange(tabId, updatedMessages);
-          }
-        }
-      });
-    }
+    const STREAM_DEBOUNCE_MS = 500;
 
     cleanupRef.current = window.browser.chatSendStream(requestId, apiHistory, {
       onChunk(chunk: string) {
         accumulated += chunk;
-        setStreamingContent(accumulated);
+        const extracted = extractOutputFromPartialJson(accumulated);
+        streamBufferRef.current = extracted;
+        // Debounce DOM updates so fade animations can complete
+        if (!streamFlushTimerRef.current) {
+          streamFlushTimerRef.current = setTimeout(() => {
+            streamFlushTimerRef.current = null;
+            setStreamingContent(streamBufferRef.current);
+          }, STREAM_DEBOUNCE_MS);
+        }
       },
       onDone() {
-        chatDone = true;
+        if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
         setIsTyping(false);
         onThinkingChange?.(tabId, false);
         setStreamingContent('');
-        // Preserve search results on the user message
+        prevRenderedRef.current = '';
+
+        // Parse the final JSON to get output and shouldShowSerper
+        const outputText = extractOutputFromPartialJson(accumulated);
+        const finalContent = outputText || accumulated;
+        const shouldShowSerper = parseShouldShowSerper(accumulated);
+
         const finalMessages = [...msgsSnapshot];
-        if (searchResultsData) {
-          finalMessages[finalMessages.length - 1] = {
-            ...finalMessages[finalMessages.length - 1],
-            searchResults: searchResultsData,
-          };
+        const assistantMsg: DisplayMessage = { role: 'assistant', content: finalContent, durationMs: Date.now() - startTime };
+
+        // Always show the assistant message immediately
+        onMessagesChange(tabId, [...finalMessages, assistantMsg]);
+
+        if (shouldShowSerper && userQuery) {
+          // Fire Serper search after AI decides it's useful — update messages when results arrive
+          const webSearch = window.browser.serperSearch(userQuery).catch(() => null);
+          const imageSearch = window.browser.serperImageSearch(userQuery).catch(() => null);
+
+          Promise.all([webSearch, imageSearch]).then(([results, imageResults]) => {
+            if ((results && results.length > 0) || (imageResults && imageResults.length > 0)) {
+              const searchResultsData: SearchResults = {
+                query: userQuery,
+                results: results || [],
+                images: imageResults || undefined,
+              };
+              // Attach search results to the user message, keep the assistant message
+              const updatedMessages = [...finalMessages];
+              updatedMessages[updatedMessages.length - 1] = {
+                ...updatedMessages[updatedMessages.length - 1],
+                searchResults: searchResultsData,
+              };
+              onMessagesChange(tabId, [...updatedMessages, assistantMsg]);
+            }
+          });
         }
-        onMessagesChange(tabId, [...finalMessages, { role: 'assistant', content: accumulated }]);
         cleanupRef.current = null;
       },
       onError(error: string) {
-        chatDone = true;
+        if (streamFlushTimerRef.current) { clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
         setIsTyping(false);
         onThinkingChange?.(tabId, false);
         setStreamingContent('');
-        const finalMessages = [...msgsSnapshot];
-        if (searchResultsData) {
-          finalMessages[finalMessages.length - 1] = {
-            ...finalMessages[finalMessages.length - 1],
-            searchResults: searchResultsData,
-          };
-        }
-        onMessagesChange(tabId, [...finalMessages, { role: 'error', content: error }]);
+        prevRenderedRef.current = '';
+        onMessagesChange(tabId, [...msgsSnapshot, { role: 'error', content: error }]);
         cleanupRef.current = null;
       },
     }, selectedModel);
-  }, [inputValue, pendingImages, messages, tabId, tabTitle, selectedModel, onMessagesChange, onTitleChange, onThinkingChange]);
+  }, [inputValue, pendingImages, pendingPdfs, messages, tabId, tabTitle, selectedModel, onMessagesChange, onTitleChange, onThinkingChange]);
+
+  const retryRef = useRef<{ assistantIndex: number; modelId: string } | null>(null);
+
+  const retryWithModel = useCallback((assistantIndex: number, modelId: string) => {
+    const userIdx = assistantIndex - 1;
+    if (userIdx < 0 || messages[userIdx]?.role !== 'user') return;
+    const userMsg = messages[userIdx];
+    // Set editing index to the user message so sendChat truncates properly
+    setEditingIndex(userIdx);
+    setSelectedModel(modelId);
+    setInputValue(userMsg.content);
+    if (userMsg.images) setPendingImages(userMsg.images);
+    if (userMsg.pdfs) setPendingPdfs(userMsg.pdfs);
+    retryRef.current = { assistantIndex, modelId };
+  }, [messages]);
+
+  // Auto-send when retry is queued
+  useEffect(() => {
+    if (retryRef.current && editingIndex !== null && inputValue) {
+      retryRef.current = null;
+      sendChat();
+    }
+  }, [editingIndex, inputValue, sendChat]);
+
+  const stopChat = useCallback(() => {
+    if (currentRequestIdRef.current) {
+      window.browser.chatAbortStream(currentRequestIdRef.current);
+    }
+    cleanupRef.current?.();
+    cleanupRef.current = null;
+    currentRequestIdRef.current = null;
+    setIsTyping(false);
+    onThinkingChange?.(tabId, false);
+    setStreamingContent('');
+  }, [tabId, onThinkingChange]);
 
   const acceptAcSuggestion = (s: { url: string }) => {
     setShowAc(false);
@@ -370,14 +587,17 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      const text = inputValue.trim();
-      if (e.metaKey && text && onNavigate) {
-        // Cmd+Enter → open Google search, converting this chat tab to a page tab
+      const fullText = ghostSuggestion ? inputValue + ghostSuggestion : inputValue;
+      if (ghostSuggestion) {
+        setInputValue(fullText);
+        setGhostSuggestion(null);
+      }
+      if (e.metaKey && fullText.trim() && onNavigate) {
         setInputValue('');
-        onNavigate(`https://www.google.com/search?q=${encodeURIComponent(text)}`);
+        onNavigate(`https://www.google.com/search?q=${encodeURIComponent(fullText.trim())}`);
         return;
       }
-      sendChat();
+      sendChat(fullText);
     }
   };
 
@@ -391,24 +611,24 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
 
   const handlePaste = useCallback(async (e: React.ClipboardEvent) => {
     const items = e.clipboardData.items;
-    const imageFiles: File[] = [];
+    const files: File[] = [];
     for (let i = 0; i < items.length; i++) {
-      if (items[i].type.startsWith('image/')) {
+      if (items[i].type.startsWith('image/') || items[i].type === 'application/pdf') {
         const file = items[i].getAsFile();
-        if (file) imageFiles.push(file);
+        if (file) files.push(file);
       }
     }
-    if (imageFiles.length > 0) {
+    if (files.length > 0) {
       e.preventDefault();
-      await addImages(imageFiles);
+      await addFiles(files);
     }
-  }, [addImages]);
+  }, [addFiles]);
 
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     const files = Array.from(e.dataTransfer.files);
-    await addImages(files);
-  }, [addImages]);
+    await addFiles(files);
+  }, [addFiles]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -428,7 +648,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
 
   return (
     <div
-      className="flex-1 flex flex-col h-full bg-white dark:bg-black overflow-hidden"
+      className="flex-1 flex flex-col h-full bg-white dark:bg-[#111] overflow-hidden"
       style={hidden ? { display: 'none' } : undefined}
       onDrop={handleDrop}
       onDragOver={handleDragOver}
@@ -440,31 +660,86 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
           {messages.map((msg, i) => {
             if (msg.role === 'error') {
               return (
-                <div key={i} className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] break-words whitespace-pre-wrap bg-red-500/10 text-red-600 dark:text-red-400 self-start border border-red-500/20" style={{ fontFamily: "'PT Serif', serif" }}>
+                <div key={i} className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] break-words whitespace-pre-wrap bg-red-500/10 text-red-600 dark:text-red-400 self-start border border-red-500/20" >
                   {msg.content}
                 </div>
               );
             }
             if (msg.role === 'assistant') {
               return (
-                <div
-                  key={i}
-                  className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-[15px] leading-relaxed max-w-[90%] break-words text-black dark:text-neutral-200 self-start"
-                  style={{ fontFamily: "'PT Serif', serif" }}
-                  dangerouslySetInnerHTML={{ __html: renderContent(msg.content) }}
-                />
+                <div key={i} className="flex flex-col self-start max-w-[90%]">
+                  <div
+                    className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-[15px] leading-relaxed break-words text-black dark:text-neutral-200"
+                                       dangerouslySetInnerHTML={{ __html: renderContent(msg.content) }}
+                    ref={(el) => {
+                      if (!el) return;
+                      el.querySelectorAll('pre').forEach((pre) => {
+                        if (pre.querySelector('.code-copy-btn')) return;
+                        pre.style.position = 'relative';
+                        const btn = document.createElement('button');
+                        btn.className = 'code-copy-btn';
+                        btn.title = 'Copy code';
+                        btn.style.cssText = 'position:absolute;top:6px;right:6px;border:none;background:rgba(128,128,128,0.2);cursor:pointer;padding:4px;border-radius:4px;color:inherit;opacity:0.5;transition:opacity 0.15s;line-height:0;';
+                        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
+                        btn.onmouseenter = () => { btn.style.opacity = '1'; };
+                        btn.onmouseleave = () => { btn.style.opacity = '0.5'; };
+                        btn.onclick = () => {
+                          const code = pre.querySelector('code');
+                          navigator.clipboard.writeText((code || pre).textContent || '');
+                          btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+                          setTimeout(() => {
+                            btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
+                          }, 10000);
+                        };
+                        pre.appendChild(btn);
+                      });
+                    }}
+                  />
+                  <div className="flex items-center gap-1 mt-1 ml-4">
+                    {msg.durationMs != null && (
+                      <span className="text-[11px] text-neutral-400 dark:text-neutral-500">{formatDuration(msg.durationMs)}</span>
+                    )}
+                    <CopyButton text={msg.content} />
+                    <RetryButton index={i} onRetry={retryWithModel} />
+                  </div>
+                </div>
               );
             }
             return (
-              <div key={i} className="flex flex-col gap-2 self-end max-w-[90%]">
-                <div className="p-2.5 px-3.5 rounded-xl rounded-br-sm text-[15px] leading-relaxed break-words whitespace-pre-wrap bg-neutral-100 dark:bg-neutral-900 dark:text-neutral-200" style={{ fontFamily: "'PT Serif', serif" }}>
+              <div key={i} className="group/user flex flex-col self-end max-w-[90%] items-end">
                   {msg.images && msg.images.map((img, j) => (
                     <img key={j} src={img} className="block max-w-full max-h-[300px] rounded-lg mb-1.5 object-contain cursor-pointer hover:opacity-80 transition-opacity" onClick={() => setLightboxImage(img)} />
                   ))}
+                  {msg.pdfs && msg.pdfs.map((pdf, j) => (
+                    <div key={`pdf-${j}`} className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-neutral-200 dark:bg-neutral-700 text-[12px] mb-1.5">
+                      <span className="font-medium text-red-500">PDF</span>
+                      <span className="text-neutral-600 dark:text-neutral-300 max-w-[150px] truncate">{pdf.name}</span>
+                    </div>
+                  ))}
+                {msg.content && (
+                <div className="p-2.5 px-3.5 rounded-xl rounded-br-sm text-[15px] leading-relaxed break-words whitespace-pre-wrap bg-neutral-100 dark:bg-neutral-900 dark:text-neutral-200" >
                   {msg.content}
                 </div>
-                {i === 0 && msg.searchResults && (msg.searchResults.results.length > 0 || (msg.searchResults.images && msg.searchResults.images.length > 0)) && (
-                  <div className="self-start w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 overflow-hidden" style={{ fontFamily: "'PT Serif', serif" }}>
+                )}
+                <div className="flex justify-end opacity-0 group-hover/user:opacity-100 transition-opacity">
+                  <CopyButton text={msg.content} />
+                  <button
+                    onClick={() => {
+                      editPrevInputRef.current = inputValue;
+                      setEditingIndex(i);
+                      setInputValue(msg.content);
+                      if (inputRef.current) {
+                        inputRef.current.focus();
+                      }
+                    }}
+                    className="border-none bg-transparent cursor-pointer p-1 rounded transition-colors text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
+                    title="Edit"
+                  >
+                    <FiEdit2 size={14} />
+                  </button>
+                </div>
+                {msg.searchResults && (msg.searchResults.results.length > 0 || (msg.searchResults.images && msg.searchResults.images.length > 0)) && (
+                  <div className="self-start w-full rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 overflow-hidden" >
                     <div className="px-3 py-1.5 text-[11px] font-medium text-neutral-500 dark:text-neutral-400 border-b border-neutral-200 dark:border-neutral-700">
                       Search results
                     </div>
@@ -498,8 +773,8 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
                         href={r.link}
                         className="flex flex-col gap-0.5 px-3 py-2 hover:bg-neutral-100 dark:hover:bg-neutral-700/50 transition-colors cursor-pointer border-b border-neutral-100 dark:border-neutral-700/50 last:border-b-0 no-underline"
                       >
-                        <span className="text-[15px] font-medium text-blue-600 dark:text-blue-400 truncate" style={{ fontFamily: "'PT Serif', serif" }}>{r.title}</span>
-                        <span className="text-[13px] text-neutral-500 dark:text-neutral-400 line-clamp-1" style={{ fontFamily: "'PT Serif', serif" }}>{r.snippet}</span>
+                        <span className="text-[15px] font-medium truncate" style={{ color: '#007AFF' }}>{r.title}</span>
+                        <span className="text-[15px] text-neutral-500 dark:text-neutral-400 line-clamp-1" >{r.snippet}</span>
                       </a>
                     ))}
                   </div>
@@ -511,11 +786,44 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             streamingContent ? (
               <div
                 className="msg-assistant p-2.5 px-3.5 rounded-xl rounded-bl text-[15px] leading-relaxed max-w-[90%] break-words text-black dark:text-neutral-200 self-start"
-                style={{ fontFamily: "'PT Serif', serif" }}
-                dangerouslySetInnerHTML={{ __html: renderContent(streamingContent) }}
+                               dangerouslySetInnerHTML={{ __html: renderContent(streamingContent) }}
+                ref={(el) => {
+                  if (!el) return;
+                  const prevLen = prevRenderedRef.current.length;
+                  const curLen = streamingContent.length;
+                  if (curLen <= prevLen) { prevRenderedRef.current = streamingContent; return; }
+                  // Walk all text nodes and find where new content starts
+                  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+                  let charCount = 0;
+                  let node: Text | null;
+                  while ((node = walker.nextNode() as Text | null)) {
+                    const nodeLen = node.textContent?.length || 0;
+                    const nodeEnd = charCount + nodeLen;
+                    if (nodeEnd > prevLen && node.parentElement) {
+                      // This text node contains new characters
+                      const newStart = Math.max(0, prevLen - charCount);
+                      if (newStart === 0 && !node.parentElement.classList.contains('stream-fade-in')) {
+                        // Entire node is new — wrap it
+                        const wrapper = document.createElement('span');
+                        wrapper.className = 'stream-fade-in';
+                        node.parentElement.insertBefore(wrapper, node);
+                        wrapper.appendChild(node);
+                      } else if (newStart > 0) {
+                        // Split the text node — only the tail is new
+                        const newNode = node.splitText(newStart);
+                        const wrapper = document.createElement('span');
+                        wrapper.className = 'stream-fade-in';
+                        newNode.parentElement!.insertBefore(wrapper, newNode);
+                        wrapper.appendChild(newNode);
+                      }
+                    }
+                    charCount = nodeEnd;
+                  }
+                  prevRenderedRef.current = streamingContent;
+                }}
               />
             ) : (
-              <div className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] self-start bg-transparent text-neutral-400" style={{ fontFamily: "'PT Serif', serif" }}>
+              <div className="p-2.5 px-3.5 rounded-xl text-[15px] leading-relaxed max-w-[90%] self-start bg-transparent text-neutral-400" >
                 <span className="inline-block bg-gradient-to-r from-neutral-300 via-neutral-500 to-neutral-300 dark:from-neutral-600 dark:via-neutral-300 dark:to-neutral-600 bg-[length:200%_100%] bg-clip-text [-webkit-background-clip:text] [-webkit-text-fill-color:transparent] animate-shimmer">
                   Thinking... {thinkingSeconds > 0 ? `${thinkingSeconds >= 60 ? `${Math.floor(thinkingSeconds / 60)}m ${Math.floor(thinkingSeconds % 60)}s` : `${Math.floor(thinkingSeconds)}s`}` : ''}
                 </span>
@@ -532,14 +840,26 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             <img src={logoDark} alt="Logo" className="h-20 mb-6 hidden dark:block" />
           </>
         )}
-        {pendingImages.length > 0 && (
-          <div className="flex gap-2 px-6 pt-3 flex-wrap">
+        {(pendingImages.length > 0 || pendingPdfs.length > 0) && (
+          <div className="flex gap-2 pr-3 pb-3 pt-3 flex-wrap">
             {pendingImages.map((img, i) => (
-              <div key={i} className="relative w-16 h-16 rounded-lg overflow-hidden border border-neutral-300 dark:border-neutral-600">
-                <img src={img} className="w-full h-full object-cover" />
+              <div key={`img-${i}`} className="relative w-16 h-16 rounded-lg overflow-hidden border border-neutral-200 dark:border-neutral-600 bg-white dark:bg-neutral-800">
+                <img src={img} className="w-full h-full object-cover brightness-100" />
+                <button
+                  className="absolute -top-0.5 -right-0.5 w-[18px] h-[18px] border-none rounded-full bg-black/50 text-white cursor-pointer flex items-center justify-center p-0 transition-colors hover:bg-black/70"
+                  onClick={() => removeImage(i)}
+                >
+                  <IoClose size={12} />
+                </button>
+              </div>
+            ))}
+            {pendingPdfs.map((pdf, i) => (
+              <div key={`pdf-${i}`} className="relative h-16 rounded-lg overflow-hidden border border-neutral-300 dark:border-neutral-600 flex items-center gap-1.5 px-2.5 bg-neutral-50 dark:bg-neutral-800">
+                <span className="text-[11px] font-medium text-red-500">PDF</span>
+                <span className="text-[12px] text-neutral-600 dark:text-neutral-300 max-w-[100px] truncate">{pdf.name}</span>
                 <button
                   className="absolute top-0.5 right-0.5 w-[18px] h-[18px] border-none rounded-full bg-black/60 dark:bg-white/30 text-white cursor-pointer flex items-center justify-center p-0 transition-colors hover:bg-black/80 dark:hover:bg-white/50"
-                  onClick={() => removeImage(i)}
+                  onClick={() => setPendingPdfs(prev => prev.filter((_, j) => j !== i))}
                 >
                   <IoClose size={12} />
                 </button>
@@ -547,13 +867,27 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             ))}
           </div>
         )}
+        {editingIndex !== null && (
+          <div className="flex items-center justify-between px-1 pb-1 no-drag">
+            <span className="text-[12px] text-neutral-500 dark:text-neutral-400">Editing message</span>
+            <button
+              className="border-none bg-transparent cursor-pointer p-0.5 rounded transition-colors text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
+              title="Cancel edit"
+              onClick={() => {
+                setEditingIndex(null);
+                setInputValue(editPrevInputRef.current);
+              }}
+            >
+              <IoClose size={16} />
+            </button>
+          </div>
+        )}
         <div className="flex items-start gap-2.5 pb-0 pr-0 no-drag w-full">
           <div className="relative flex-1">
             <textarea
               ref={inputRef}
-              className="h-10 w-full resize-none border border-neutral-200 dark:border-neutral-700 rounded-[10px] bg-white dark:bg-neutral-900 text-black dark:text-neutral-200 text-[15px] py-2 px-3.5 outline-none max-h-[120px] transition-colors placeholder:text-neutral-400 dark:placeholder:text-neutral-600 box-border"
-              style={{ fontFamily: "'PT Serif', serif" }}
-              placeholder={ghostSuggestion && !inputValue ? '' : 'Ask anything...'}
+              className="h-10 w-full resize-none border border-neutral-200 dark:border-neutral-700 rounded-[10px] bg-white dark:bg-neutral-900 text-black dark:text-neutral-200 text-[15px] py-2 px-3.5 outline-none max-h-[120px] overflow-hidden transition-colors placeholder:text-neutral-400 dark:placeholder:text-neutral-600 box-border"
+                           placeholder={ghostSuggestion && !inputValue ? '' : 'Ask anything...'}
               rows={1}
               value={inputValue}
               onChange={handleInput}
@@ -563,8 +897,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
             {ghostSuggestion && (
               <div
                 className="absolute inset-0 pointer-events-none border border-transparent rounded-[10px] py-2 px-3.5 text-[15px] overflow-hidden whitespace-nowrap text-ellipsis h-10 box-border"
-                style={{ fontFamily: "'PT Serif', serif" }}
-              >
+                             >
                 {inputValue && <span className="invisible whitespace-pre">{inputValue}</span>}
                 <span className="text-neutral-400 dark:text-neutral-600">{ghostSuggestion}</span>
               </div>
@@ -575,7 +908,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
                   {acSuggestions.map((s, i) => (
                     <div
                       key={s.url}
-                      className={`px-3 py-1.5 text-[13px] cursor-pointer flex items-center gap-2 truncate ${
+                      className={`px-3 py-1.5 text-[15px] cursor-pointer flex items-center gap-2 truncate ${
                         i === acIndex
                           ? 'bg-blue-500 text-white'
                           : 'text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700'
@@ -590,13 +923,23 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
               </div>
             )}
           </div>
-          <button
-            className="w-10 h-10 border-none rounded-[10px] bg-neutral-900 dark:bg-neutral-700 text-white cursor-pointer flex items-center justify-center transition-colors shrink-0 hover:bg-neutral-700 dark:hover:bg-neutral-600"
-            title="Send"
-            onClick={sendChat}
-          >
-            {isEmpty ? <FiArrowRight size={18} /> : <FiArrowUp size={18} />}
-          </button>
+          {isTyping ? (
+            <button
+              className="w-10 h-10 border-none rounded-[10px] bg-neutral-900 dark:bg-neutral-700 text-white cursor-pointer flex items-center justify-center transition-colors shrink-0 hover:bg-neutral-700 dark:hover:bg-neutral-600"
+              title="Stop"
+              onClick={stopChat}
+            >
+              <FiSquare size={16} />
+            </button>
+          ) : (
+            <button
+              className="w-10 h-10 border-none rounded-[10px] bg-neutral-900 dark:bg-neutral-700 text-white cursor-pointer flex items-center justify-center transition-colors shrink-0 hover:bg-neutral-700 dark:hover:bg-neutral-600"
+              title="Send"
+              onClick={() => sendChat()}
+            >
+              {isEmpty ? <FiArrowRight size={18} /> : <FiArrowUp size={18} />}
+            </button>
+          )}
         </div>
         <div className="flex items-center pb-4 no-drag self-start relative z-10">
           <div className="relative" ref={modelMenuRef}>
