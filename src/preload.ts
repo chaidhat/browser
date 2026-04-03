@@ -43,10 +43,19 @@ export interface SerperImageResult {
   link: string;
 }
 
+export interface ToolCallInfo {
+  toolCallId: string;
+  toolName: string;
+  toolArgs: Record<string, any>;
+  result?: string;
+  status: 'running' | 'done' | 'error';
+}
+
 export interface ChatStreamCallbacks {
   onChunk: (chunk: string) => void;
   onDone: () => void;
   onError: (error: string) => void;
+  onToolCall?: (info: ToolCallInfo) => void;
 }
 
 export interface DownloadStartedEvent {
@@ -76,7 +85,7 @@ export interface HistoryEntry {
 }
 
 export interface BrowserAPI {
-  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks, modelId?: string) => () => void;
+  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks) => () => void;
   chatAbortStream: (requestId: string) => void;
   chatGenerateTitle: (userMessage: string) => Promise<string | null>;
   chatSuggest: (messages: ChatMessage[], partialInput: string) => Promise<string | null>;
@@ -108,7 +117,7 @@ export interface BrowserAPI {
 }
 
 contextBridge.exposeInMainWorld('browser', {
-  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks, modelId?: string) => {
+  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks) => {
     const onChunk = (_event: unknown, id: string, chunk: string) => {
       if (id === requestId) callbacks.onChunk(chunk);
     };
@@ -124,17 +133,22 @@ contextBridge.exposeInMainWorld('browser', {
         callbacks.onError(error);
       }
     };
+    const onToolCall = (_event: unknown, id: string, info: ToolCallInfo) => {
+      if (id === requestId) callbacks.onToolCall?.(info);
+    };
 
     const cleanup = () => {
       ipcRenderer.removeListener('chat-stream-chunk', onChunk);
       ipcRenderer.removeListener('chat-stream-done', onDone);
       ipcRenderer.removeListener('chat-stream-error', onError);
+      ipcRenderer.removeListener('chat-stream-tool-call', onToolCall);
     };
 
     ipcRenderer.on('chat-stream-chunk', onChunk);
     ipcRenderer.on('chat-stream-done', onDone);
     ipcRenderer.on('chat-stream-error', onError);
-    ipcRenderer.send('chat-send-stream', requestId, messages, modelId);
+    ipcRenderer.on('chat-stream-tool-call', onToolCall);
+    ipcRenderer.send('chat-send-stream', requestId, messages);
 
     return cleanup;
   },
