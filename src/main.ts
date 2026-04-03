@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, shell, session, desktopCapturer, systemPreferences } from 'electron';
 import path from 'path';
 import fs from 'fs';
-import { consultModelToolSpec, searchToolSpec, type CustomToolSpec } from './customTools';
+import { consultModelToolSpec, consultOpenclawToolSpec, searchToolSpec, type CustomToolSpec } from './customTools';
 
 app.name = 'Pause';
 // Theme is applied after settings are loaded (see app.whenReady)
@@ -25,8 +25,10 @@ interface Settings {
   googleKey: string;
   braveKey: string;
   serperKey: string;
+  openclawUrl: string;
+  openclawToken: string;
   emailAccounts: EmailAccount[];
-  font: 'inter' | 'pt-serif';
+  font: 'geist' | 'pt-serif';
   theme: 'light' | 'sunset' | 'dark' | 'system';
 }
 
@@ -34,7 +36,7 @@ const settingsPath = path.join(app.getPath('userData'), 'settings.json');
 const tabsPath = path.join(app.getPath('userData'), 'tabs.json');
 const historyPath = path.join(app.getPath('userData'), 'history.json');
 
-const settingsDefaults: Settings = { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', emailAccounts: [], font: 'pt-serif', theme: 'system' };
+const settingsDefaults: Settings = { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', openclawUrl: '', openclawToken: '', emailAccounts: [], font: 'pt-serif', theme: 'system' };
 
 function applyTheme(theme: Settings['theme']): void {
   // 'sunset' is treated as dark at the OS level; the renderer handles the warm tint
@@ -513,9 +515,8 @@ ipcMain.handle('serper-image-search', async (_event, query: string) => {
 });
 
 // OpenAI Chat IPC (using Vercel AI SDK)
-import { generateObject, generateText } from 'ai';
+import { generateObject, generateText, streamObject } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
-import type { OpenAILanguageModelResponsesOptions } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { z } from 'zod';
@@ -590,14 +591,22 @@ function getModelForId(settings: Settings, modelId: string, hasFiles = false) {
       });
       return { model: google('gemini-3.1-pro-preview') };
     }
-    case 'gpt-5.4':
-    default: {
+    case 'gpt-5.4': {
       if (!settings.openaiKey) return { error: 'No OpenAI API key configured. Open Settings to add one.' };
       const openai = createOpenAI({ apiKey: settings.openaiKey });
       if (hasFiles) {
         return { model: openai.chat('gpt-5.4'), isOpenAI: true, isChatCompletions: true };
       }
       return { model: openai.responses('gpt-5.4'), isOpenAI: true };
+    }
+    case 'gpt-5.4-mini':
+    default: {
+      if (!settings.openaiKey) return { error: 'No OpenAI API key configured. Open Settings to add one.' };
+      const openai = createOpenAI({ apiKey: settings.openaiKey });
+      if (hasFiles) {
+        return { model: openai.chat('gpt-5.4-mini'), isOpenAI: true, isChatCompletions: true };
+      }
+      return { model: openai.responses('gpt-5.4-mini'), isOpenAI: true };
     }
   }
 }
@@ -637,28 +646,49 @@ function buildCustomTools(settings: Settings): CustomToolDef[] {
       execute: async ({ query }, { settings: s }) => {
         if (!query || typeof query !== 'string') return 'Error: Missing query';
         if (!s.braveKey) return 'Error: No Brave Search API key configured. Open Settings to add one.';
-        const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query.trim())}&count=5`;
-        const res = await fetch(url, {
+        const trimmedQuery = query.trim();
+        const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(trimmedQuery)}&count=5`;
+        const webPromise = fetch(url, {
           headers: { 'X-Subscription-Token': s.braveKey, Accept: 'application/json' },
-        });
-        if (!res.ok) {
-          return `Error: Brave Search failed: ${res.status} ${res.statusText}`;
-        }
-        const data = await res.json();
-        return JSON.stringify({
-          query: query.trim(),
-          results: (data.web?.results || []).slice(0, 5).map((r: any) => ({
+        }).then(async (res) => {
+          if (!res.ok) return [];
+          const data = await res.json();
+          return (data.web?.results || []).slice(0, 5).map((r: any) => ({
             title: r.title,
             link: r.url,
             snippet: r.description,
-          })),
+          }));
+        }).catch(() => []);
+
+        const imagePromise = s.serperKey
+          ? fetch('https://google.serper.dev/images', {
+              method: 'POST',
+              headers: { 'X-API-KEY': s.serperKey, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ q: trimmedQuery, num: 10 }),
+            }).then(async (res) => {
+              if (!res.ok) return [];
+              const data = await res.json();
+              return (data.images || []).slice(0, 10).map((img: any) => ({
+                title: img.title || '',
+                imageUrl: img.imageUrl || '',
+                link: img.link || '',
+              }));
+            }).catch(() => [])
+          : Promise.resolve([]);
+
+        const [results, images] = await Promise.all([webPromise, imagePromise]);
+        if (results.length === 0) return 'Error: Brave Search failed';
+        return JSON.stringify({
+          query: trimmedQuery,
+          results,
+          ...(images.length > 0 ? { images } : {}),
         });
       },
     },
     {
       ...consultModelToolSpec,
       inputSchema: z.object({
-        model: z.enum(['gemini-3.1-pro', 'claude-opus-4-6']),
+        model: z.enum(['gpt-5.4', 'gemini-3.1-pro', 'claude-opus-4-6']),
         question: z.string(),
       }),
       execute: async ({ model: modelId, question }, { settings: s, abortSignal }) => {
@@ -671,6 +701,36 @@ function buildCustomTools(settings: Settings): CustomToolDef[] {
           abortSignal,
         });
         return result.text || '(empty response)';
+      },
+    },
+    {
+      ...consultOpenclawToolSpec,
+      inputSchema: z.object({
+        question: z.string(),
+      }),
+      execute: async ({ question }, { settings: s, abortSignal }) => {
+        if (!question || typeof question !== 'string') return 'Error: Missing question';
+        if (!s.openclawUrl) return 'Error: No OpenClaw server URL configured. Open Settings to add one.';
+        const baseUrl = s.openclawUrl.replace(/\/+$/, '');
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (s.openclawToken) headers['Authorization'] = `Bearer ${s.openclawToken}`;
+        try {
+          const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+            method: 'POST',
+            headers: { ...headers, 'x-openclaw-agent-id': 'main' },
+            body: JSON.stringify({
+              model: 'openclaw',
+              messages: [{ role: 'user', content: question.trim() }],
+            }),
+            signal: abortSignal,
+          });
+          if (!res.ok) return `Error: OpenClaw returned ${res.status} ${res.statusText}`;
+          const data = await res.json();
+          return data.choices?.[0]?.message?.content || JSON.stringify(data);
+        } catch (err: any) {
+          if (err?.name === 'AbortError') return 'Error: Request aborted';
+          return `Error: Failed to reach OpenClaw server: ${err?.message || err}`;
+        }
       },
     },
   ];
@@ -686,10 +746,10 @@ ipcMain.on('chat-abort-stream', (_event, requestId: string) => {
   }
 });
 
-ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMessage[]) => {
+ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMessage[], modelId: string) => {
   const settings = loadSettings();
   const hasFiles = messages.some(m => Array.isArray(m.content) && m.content.some(b => b.type === 'file'));
-  const resolved = getModelForId(settings, 'gpt-5.4', hasFiles);
+  const resolved = getModelForId(settings, modelId || 'gpt-5.4-mini', hasFiles);
   if ('error' in resolved) {
     event.sender.send('chat-stream-error', requestId, resolved.error);
     return;
@@ -720,6 +780,7 @@ ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMe
 
     let responseObject: z.infer<typeof responseSchema> | null = null;
     let succeeded = false;
+    let lastStreamedLength = 0;
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       if (abortController.signal.aborted) {
@@ -728,18 +789,26 @@ ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMe
         return;
       }
       try {
-        const result = await generateObject({
+        const stream = streamObject({
           model: resolved.model,
           schema: responseSchema,
           messages: toSdkMessages(conversationMessages) as any,
           abortSignal: abortController.signal,
-          ...(resolved.isOpenAI ? {
-            providerOptions: {
-              openai: { reasoningEffort: 'high' } satisfies OpenAILanguageModelResponsesOptions,
-            },
-          } : {}),
         });
-        responseObject = result.object;
+
+        // Stream partial output to the renderer as it arrives
+        lastStreamedLength = 0;
+        for await (const partial of stream.partialObjectStream) {
+          if (abortController.signal.aborted) break;
+          // If partial has an output field, send only the new delta
+          if (partial.outputType === 'text' && typeof partial.output === 'string' && partial.output.length > lastStreamedLength) {
+            const delta = partial.output.slice(lastStreamedLength);
+            event.sender.send('chat-stream-chunk', requestId, delta);
+            lastStreamedLength = partial.output.length;
+          }
+        }
+
+        responseObject = await stream.object;
         const hasTextOutput = responseObject.outputType === 'text' && typeof responseObject.output === 'string' && !!responseObject.output.trim();
         const hasToolCalls = responseObject.outputType === 'toolCalls' && Array.isArray(responseObject.toolCalls) && responseObject.toolCalls.length > 0;
         if (!hasTextOutput && !hasToolCalls && attempt < MAX_RETRIES) {
@@ -822,8 +891,11 @@ ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMe
       continue;
     }
 
-    // Direct response — send as chunk and finish
-    event.sender.send('chat-stream-chunk', requestId, JSON.stringify({ output: typeof responseObject.output === 'string' ? responseObject.output : '' }));
+    // Send any remaining output not yet streamed
+    const finalOutput = typeof responseObject.output === 'string' ? responseObject.output : '';
+    if (finalOutput.length > lastStreamedLength) {
+      event.sender.send('chat-stream-chunk', requestId, finalOutput.slice(lastStreamedLength));
+    }
     activeAbortControllers.delete(requestId);
     event.sender.send('chat-stream-done', requestId);
     return;

@@ -26,8 +26,10 @@ export interface Settings {
   googleKey: string;
   braveKey: string;
   serperKey: string;
+  openclawUrl: string;
+  openclawToken: string;
   emailAccounts: EmailAccount[];
-  font: 'inter' | 'pt-serif';
+  font: 'geist' | 'pt-serif';
   theme: 'light' | 'sunset' | 'dark' | 'system';
 }
 
@@ -85,7 +87,7 @@ export interface HistoryEntry {
 }
 
 export interface BrowserAPI {
-  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks) => () => void;
+  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks, modelId?: string) => () => void;
   chatAbortStream: (requestId: string) => void;
   chatGenerateTitle: (userMessage: string) => Promise<string | null>;
   chatSuggest: (messages: ChatMessage[], partialInput: string) => Promise<string | null>;
@@ -117,7 +119,7 @@ export interface BrowserAPI {
 }
 
 contextBridge.exposeInMainWorld('browser', {
-  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks) => {
+  chatSendStream: (requestId: string, messages: ChatMessage[], callbacks: ChatStreamCallbacks, modelId?: string) => {
     const onChunk = (_event: unknown, id: string, chunk: string) => {
       if (id === requestId) callbacks.onChunk(chunk);
     };
@@ -148,7 +150,7 @@ contextBridge.exposeInMainWorld('browser', {
     ipcRenderer.on('chat-stream-done', onDone);
     ipcRenderer.on('chat-stream-error', onError);
     ipcRenderer.on('chat-stream-tool-call', onToolCall);
-    ipcRenderer.send('chat-send-stream', requestId, messages);
+    ipcRenderer.send('chat-send-stream', requestId, messages, modelId || 'gpt-5.4-mini');
 
     return cleanup;
   },

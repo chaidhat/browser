@@ -168,7 +168,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [tabSidebarOpen, setTabSidebarOpen] = useState(true);
   const openSettings = useCallback(() => window.browser.openSettings(), []);
-  const [font, setFont] = useState<'inter' | 'pt-serif'>('pt-serif');
+  const [font, setFont] = useState<'geist' | 'pt-serif'>('pt-serif');
   const [loadingTabs, setLoadingTabs] = useState<Record<number, boolean>>({});
   const [favicons, setFavicons] = useState<Record<number, string>>({});
   const [chatHistories, setChatHistories] = useState<ChatHistories>({});
@@ -195,7 +195,7 @@ export default function App() {
   }, [activeTab?.title, activeTab?.id]);
 
   useEffect(() => {
-    const ff = font === 'inter' ? 'Inter, sans-serif' : "'PT Serif', serif";
+    const ff = font === 'geist' ? 'Geist, sans-serif' : "'PT Serif', serif";
     document.documentElement.style.fontFamily = ff;
     document.body.style.fontFamily = ff;
   }, [font]);
@@ -207,10 +207,12 @@ export default function App() {
         activeTabId: number;
         nextTabId: number;
         chatHistories: ChatHistories;
+        favicons?: Record<number, string>;
       } | null;
       if (saved?.tabs?.length) {
         dispatch({ type: 'RESTORE', state: { tabs: saved.tabs, activeTabId: saved.activeTabId, nextTabId: saved.nextTabId } });
         setChatHistories(saved.chatHistories || {});
+        if (saved.favicons) setFavicons(saved.favicons);
       } else {
         dispatch({ type: 'CREATE_TAB' });
       }
@@ -239,9 +241,10 @@ export default function App() {
         activeTabId: tabState.activeTabId,
         nextTabId: tabState.nextTabId,
         chatHistories,
+        favicons,
       });
     }, 500);
-  }, [tabState, chatHistories, initialized]);
+  }, [tabState, chatHistories, favicons, initialized]);
 
   const historySaveRef = useRef<ReturnType<typeof setTimeout>>();
   useEffect(() => {

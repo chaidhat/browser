@@ -12,13 +12,20 @@ export const searchToolSpec: CustomToolSpec = {
 
 export const consultModelToolSpec: CustomToolSpec = {
   name: 'consultModel',
-  description: "ALWAYS consult another model for a second opinion to a question that requiers a high school degree or more to answer. For example, if the user asks about deriving e=mc^2 then you'd consult gemini and claude. Write the question you want to consult the model. If I tell it to use Gemini or Claude please use this tool call.",
-  argsDescription: '{model: "gemini-3.1-pro" | "claude-opus-4-6", question: string}',
+  description: "Consult another model for a second opinion on questions that require a bachelor's degree level of knowledge or higher. For example, deriving e=mc^2, analyzing legal precedents, or explaining graduate-level algorithms. Do NOT use this for everyday questions, general knowledge, or anything a high schooler could answer. Also use this if the user explicitly asks to use Gemini, Claude, or GPT.",
+  argsDescription: '{model: "gpt-5.4" | "gemini-3.1-pro" | "claude-opus-4-6", question: string}',
+};
+
+export const consultOpenclawToolSpec: CustomToolSpec = {
+  name: 'consultOpenclaw',
+  description: 'Consult your self-hosted OpenClaw AI agent. Use this when the user asks to use OpenClaw, or when you want a second opinion from the user\'s private agent. The agent has access to tools and memory on the user\'s server.',
+  argsDescription: '{question: string}',
 };
 
 export const customToolSpecs: CustomToolSpec[] = [
   searchToolSpec,
   consultModelToolSpec,
+  consultOpenclawToolSpec,
 ];
 
 export function buildCustomToolsPromptText(): string {
