@@ -22,10 +22,38 @@ export const consultOpenclawToolSpec: CustomToolSpec = {
   argsDescription: '{question: string}',
 };
 
+export const bashToolSpec: CustomToolSpec = {
+  name: 'bash',
+  description: 'Execute a shell command on the user\'s computer. Use this when you need to run terminal commands, install packages, check system info, manipulate files, run scripts, or perform any task that requires shell access. The command runs in the user\'s default shell.',
+  argsDescription: '{command: string}',
+};
+
+export const thinkingToolSpec: CustomToolSpec = {
+  name: 'thinking',
+  description: 'Share your current thinking with the user. Use this frequently to show your reasoning process, what you are considering, what you are uncertain about, and why you are making the choices you are making. Be as honest and transparent as possible — include doubts, tradeoffs, and things you might be wrong about. The user wants to see your real thought process, not a polished summary.',
+  argsDescription: '{thought: string}',
+};
+
+export const readDiscordToolSpec: CustomToolSpec = {
+  name: 'readDiscord',
+  description: 'Fetch recent messages from a Discord channel. Use this when the user asks about Discord messages, wants to check a channel, or asks what people are saying on Discord. Returns the latest messages with author, content, and timestamp.',
+  argsDescription: '{channelId: string, limit: number} — pass "" for channelId to use the default channel, pass 0 for limit to use default',
+};
+
+export const readEmailToolSpec: CustomToolSpec = {
+  name: 'readEmail',
+  description: 'Fetch recent emails from the user\'s configured IMAP email account. Use this when the user asks about their email, wants to check their inbox, or asks what emails they have. Returns recent messages with subject, sender, date, and body preview.',
+  argsDescription: '{accountLabel: string, limit: number} — pass "" for accountLabel to use the default account, pass 0 for limit to use default',
+};
+
 export const customToolSpecs: CustomToolSpec[] = [
   searchToolSpec,
   consultModelToolSpec,
   consultOpenclawToolSpec,
+  bashToolSpec,
+  thinkingToolSpec,
+  readDiscordToolSpec,
+  readEmailToolSpec,
 ];
 
 export function buildCustomToolsPromptText(): string {

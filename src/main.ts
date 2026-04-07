@@ -1,7 +1,9 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme, dialog, shell, session, desktopCapturer, systemPreferences } from 'electron';
 import path from 'path';
 import fs from 'fs';
-import { consultModelToolSpec, consultOpenclawToolSpec, searchToolSpec, type CustomToolSpec } from './customTools';
+import { exec } from 'child_process';
+import crypto from 'crypto';
+import { consultModelToolSpec, consultOpenclawToolSpec, searchToolSpec, bashToolSpec, thinkingToolSpec, readDiscordToolSpec, readEmailToolSpec, type CustomToolSpec } from './customTools';
 
 app.name = 'Pause';
 // Theme is applied after settings are loaded (see app.whenReady)
@@ -27,7 +29,10 @@ interface Settings {
   serperKey: string;
   openclawUrl: string;
   openclawToken: string;
+  openclawSetupScript: string;
   emailAccounts: EmailAccount[];
+  discordBotToken: string;
+  discordChannelIds: string;
   font: 'geist' | 'pt-serif';
   theme: 'light' | 'sunset' | 'dark' | 'system';
 }
@@ -35,8 +40,94 @@ interface Settings {
 const settingsPath = path.join(app.getPath('userData'), 'settings.json');
 const tabsPath = path.join(app.getPath('userData'), 'tabs.json');
 const historyPath = path.join(app.getPath('userData'), 'history.json');
+const messagesDbPath = path.join(app.getPath('userData'), 'messages.db');
+const cursorsPath = path.join(app.getPath('userData'), 'message-cursors.json');
 
-const settingsDefaults: Settings = { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', openclawUrl: '', openclawToken: '', emailAccounts: [], font: 'pt-serif', theme: 'system' };
+// SQLite messages database (sql.js — pure JS, no native module)
+let _sqlJsDb: any = null;
+let _sqlJsDirty = false;
+
+async function getMessagesDb(): Promise<any> {
+  if (_sqlJsDb) return _sqlJsDb;
+  const initSqlJs = require('sql.js/dist/sql-asm.js');
+  const SQL = await initSqlJs();
+  try {
+    const buffer = fs.readFileSync(messagesDbPath);
+    _sqlJsDb = new SQL.Database(new Uint8Array(buffer));
+  } catch {
+    _sqlJsDb = new SQL.Database();
+  }
+  _sqlJsDb.exec(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      time INTEGER NOT NULL,
+      email_subject TEXT,
+      email_from TEXT,
+      email_preview TEXT,
+      email_seq INTEGER,
+      email_uid INTEGER,
+      discord_author TEXT,
+      discord_content TEXT,
+      discord_attachments INTEGER DEFAULT 0,
+      date_str TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(time);
+    CREATE INDEX IF NOT EXISTS idx_messages_source ON messages(source);
+
+    CREATE TABLE IF NOT EXISTS email_bodies (
+      uid INTEGER PRIMARY KEY,
+      subject TEXT,
+      sender TEXT,
+      recipient TEXT,
+      date_str TEXT,
+      body TEXT,
+      html TEXT,
+      fetched_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS custom_messages (
+      id TEXT PRIMARY KEY,
+      time INTEGER NOT NULL,
+      subject TEXT,
+      sender TEXT,
+      body TEXT
+    );
+  `);
+  return _sqlJsDb;
+}
+
+function saveDbToDisk() {
+  if (!_sqlJsDb) return;
+  const data = _sqlJsDb.export();
+  fs.writeFileSync(messagesDbPath, Buffer.from(data));
+  _sqlJsDirty = false;
+}
+
+// Debounced save — write to disk at most every 2 seconds
+let _saveTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleDbSave() {
+  _sqlJsDirty = true;
+  if (_saveTimer) return;
+  _saveTimer = setTimeout(() => {
+    _saveTimer = null;
+    if (_sqlJsDirty) saveDbToDisk();
+  }, 2000);
+}
+
+function saveCursors(cursors: { emailOldestSeq?: number | null; discordOldestId?: string | null }) {
+  fs.writeFileSync(cursorsPath, JSON.stringify(cursors));
+}
+
+function loadCursors(): { emailOldestSeq?: number | null; discordOldestId?: string | null } {
+  try {
+    return JSON.parse(fs.readFileSync(cursorsPath, 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+const settingsDefaults: Settings = { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', openclawUrl: 'http://localhost:28789', openclawToken: '740c59dae82325593b9ecc4672662f163f6e15f5e027bb4f', openclawSetupScript: 'lsof -ti :28789 | xargs kill -9 2>/dev/null; sleep 1; ssh -i /Users/chai/conductor/workspaces/browser/bordeaux/.context/attachments/chai-server-key.pem -L 28789:localhost:18789 -N -f -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=3 ubuntu@54.254.27.39', emailAccounts: [], discordBotToken: '', discordChannelIds: '', font: 'pt-serif', theme: 'system' };
 
 function applyTheme(theme: Settings['theme']): void {
   // 'sunset' is treated as dark at the OS level; the renderer handles the warm tint
@@ -388,6 +479,529 @@ ipcMain.handle('test-imap', async (_event, account: EmailAccount) => {
   }
 });
 
+// Direct email/discord fetch IPC (for dedicated tabs)
+ipcMain.handle('read-email', async (_event, opts?: { accountLabel?: string; limit?: number; beforeSeq?: number }) => {
+  const s = loadSettings();
+  if (!s.emailAccounts || s.emailAccounts.length === 0) return { error: 'No email accounts configured. Open Settings > Email to add one.' };
+  const account = opts?.accountLabel
+    ? s.emailAccounts.find((a: EmailAccount) => a.label.toLowerCase() === opts.accountLabel!.toLowerCase() || a.email.toLowerCase() === opts.accountLabel!.toLowerCase())
+    : s.emailAccounts[0];
+  if (!account) return { error: `Email account "${opts?.accountLabel}" not found.` };
+  if (!account.imap.host || !account.imap.username) return { error: `IMAP not configured for ${account.label || account.email}. Open Settings > Email.` };
+
+  const count = Math.min(opts?.limit || 20, 50);
+  const { ImapFlow } = require('imapflow');
+  const client = new ImapFlow({
+    host: account.imap.host,
+    port: account.imap.port,
+    secure: account.imap.security === 'tls',
+    auth: { user: account.imap.username, pass: account.imap.password },
+    logger: false,
+    tls: account.imap.security === 'starttls' ? { rejectUnauthorized: false } : undefined,
+  });
+
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock('INBOX');
+    try {
+      const messageCount = client.mailbox?.exists || 0;
+      if (messageCount === 0) return { account: account.label || account.email, messageCount: 0, messages: [] };
+
+      const upperBound = opts?.beforeSeq ? opts.beforeSeq - 1 : messageCount;
+      if (upperBound < 1) return { account: account.label || account.email, messageCount, messages: [] };
+      const startSeq = Math.max(1, upperBound - count + 1);
+
+      const messages: { subject: string; from: string; date: string; preview: string; seq: number; uid: number }[] = [];
+      for await (const msg of client.fetch(`${startSeq}:${upperBound}`, { envelope: true, bodyStructure: true, source: { maxLength: 2000 }, uid: true })) {
+        const bodyText = msg.source ? msg.source.toString().replace(/[\r\n]+/g, ' ').slice(0, 200) : '';
+        messages.push({
+          subject: msg.envelope.subject || '(no subject)',
+          from: msg.envelope.from?.[0]?.address || 'unknown',
+          date: msg.envelope.date?.toISOString?.() || '',
+          preview: bodyText,
+          seq: msg.seq,
+          uid: msg.uid,
+        });
+      }
+      messages.reverse();
+      return { account: account.label || account.email, messageCount, messages };
+    } finally {
+      lock.release();
+    }
+  } catch (err: unknown) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    try { await client.logout(); } catch { /* ignore */ }
+  }
+});
+
+ipcMain.handle('read-email-message', async (_event, opts: { uid: number; accountLabel?: string }) => {
+  const s = loadSettings();
+  if (!s.emailAccounts || s.emailAccounts.length === 0) return { error: 'No email accounts configured.' };
+  const account = opts.accountLabel
+    ? s.emailAccounts.find((a: EmailAccount) => a.label.toLowerCase() === opts.accountLabel!.toLowerCase() || a.email.toLowerCase() === opts.accountLabel!.toLowerCase())
+    : s.emailAccounts[0];
+  if (!account) return { error: 'Email account not found.' };
+
+  const { ImapFlow } = require('imapflow');
+  const { simpleParser } = require('mailparser');
+  const client = new ImapFlow({
+    host: account.imap.host,
+    port: account.imap.port,
+    secure: account.imap.security === 'tls',
+    auth: { user: account.imap.username, pass: account.imap.password },
+    logger: false,
+    tls: account.imap.security === 'starttls' ? { rejectUnauthorized: false } : undefined,
+  });
+
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock('INBOX');
+    try {
+      let result: { subject: string; from: string; to: string; date: string; body: string; html: string } | null = null;
+      for await (const msg of client.fetch(`${opts.uid}`, { envelope: true, source: true }, { uid: true })) {
+        const parsed = await simpleParser(msg.source);
+        result = {
+          subject: msg.envelope.subject || '(no subject)',
+          from: msg.envelope.from?.[0]?.address || 'unknown',
+          to: msg.envelope.to?.map((a: { address?: string }) => a.address).join(', ') || '',
+          date: msg.envelope.date?.toISOString?.() || '',
+          body: parsed.text || '',
+          html: parsed.html || '',
+        };
+      }
+      return result || { error: 'Message not found.' };
+    } finally {
+      lock.release();
+    }
+  } catch (err: unknown) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    try { await client.logout(); } catch { /* ignore */ }
+  }
+});
+
+ipcMain.handle('archive-email', async (_event, opts: { uid: number; accountLabel?: string }) => {
+  const s = loadSettings();
+  if (!s.emailAccounts || s.emailAccounts.length === 0) return { error: 'No email accounts configured.' };
+  const account = opts.accountLabel
+    ? s.emailAccounts.find((a: EmailAccount) => a.label.toLowerCase() === opts.accountLabel!.toLowerCase() || a.email.toLowerCase() === opts.accountLabel!.toLowerCase())
+    : s.emailAccounts[0];
+  if (!account) return { error: 'Email account not found.' };
+
+  const { ImapFlow } = require('imapflow');
+  const client = new ImapFlow({
+    host: account.imap.host,
+    port: account.imap.port,
+    secure: account.imap.security === 'tls',
+    auth: { user: account.imap.username, pass: account.imap.password },
+    logger: false,
+    tls: account.imap.security === 'starttls' ? { rejectUnauthorized: false } : undefined,
+  });
+
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock('INBOX');
+    try {
+      // List mailboxes to find the archive folder
+      const mailboxes = await client.list();
+      const archiveNames = ['Archive', '[Gmail]/All Mail', 'Archives', 'ARCHIVE'];
+      let archiveFolder: string | null = null;
+      for (const name of archiveNames) {
+        if (mailboxes.some((mb: { path: string }) => mb.path === name)) {
+          archiveFolder = name;
+          break;
+        }
+      }
+      if (!archiveFolder) {
+        // No archive folder found — try creating one
+        try {
+          await client.mailboxCreate('Archive');
+          archiveFolder = 'Archive';
+        } catch {
+          return { error: 'No archive folder found and could not create one.' };
+        }
+      }
+      await client.messageMove(`${opts.uid}`, archiveFolder, { uid: true });
+      return { success: true };
+    } finally {
+      lock.release();
+    }
+  } catch (err: unknown) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    try { await client.logout(); } catch { /* ignore */ }
+  }
+});
+
+ipcMain.handle('read-discord', async (_event, opts?: { channelId?: string; limit?: number; before?: string }) => {
+  const s = loadSettings();
+  const token = s.discordBotToken?.trim();
+  if (!token) return { error: 'No Discord bot token configured. Open Settings > Discord to add one.' };
+  const channelIds = s.discordChannelIds.split('\n').map((id: string) => id.trim()).filter(Boolean);
+  const targetChannel = opts?.channelId?.trim() || channelIds[0];
+  if (!targetChannel) return { error: 'No channel ID provided and none configured in Settings > Discord.' };
+
+  const count = Math.min(opts?.limit || 25, 50);
+  let url = `https://discord.com/api/v10/channels/${targetChannel}/messages?limit=${count}`;
+  if (opts?.before) url += `&before=${opts.before}`;
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bot ${token}` },
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      return { error: `Discord API returned ${res.status} ${res.statusText}${body ? ': ' + body : ''}` };
+    }
+    const messages = await res.json();
+    const formatted = messages.map((m: { id: string; author: { username: string }; content: string; timestamp: string; attachments?: { url: string }[] }) => ({
+      id: m.id,
+      author: m.author.username,
+      content: m.content || '(no text)',
+      time: m.timestamp,
+      attachments: m.attachments?.length || 0,
+    }));
+    return { channelId: targetChannel, messages: formatted, availableChannels: channelIds };
+  } catch (err: unknown) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+});
+
+// IMAP IDLE — persistent connection for real-time email notifications
+let imapIdleClient: any = null;
+let imapIdleReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function startImapIdle() {
+  stopImapIdle();
+  const s = loadSettings();
+  if (!s.emailAccounts || s.emailAccounts.length === 0) return;
+  const account = s.emailAccounts[0];
+  if (!account.imap.host || !account.imap.username) return;
+
+  const { ImapFlow } = require('imapflow');
+  const client = new ImapFlow({
+    host: account.imap.host,
+    port: account.imap.port,
+    secure: account.imap.security === 'tls',
+    auth: { user: account.imap.username, pass: account.imap.password },
+    logger: false,
+    tls: account.imap.security === 'starttls' ? { rejectUnauthorized: false } : undefined,
+    emitLogs: false,
+  });
+
+  try {
+    await client.connect();
+    imapIdleClient = client;
+    const lock = await client.getMailboxLock('INBOX');
+
+    // UID reconciliation on connect — sync local DB with server state
+    try {
+      const serverUids: number[] = [];
+      const searchResult = await client.search({ all: true });
+      if (searchResult && searchResult.length > 0) {
+        // searchResult is sequence numbers; fetch UIDs for all
+        for await (const msg of client.fetch('1:*', { uid: true })) {
+          serverUids.push(msg.uid);
+        }
+      }
+
+      if (serverUids.length > 0) {
+        const db = await getMessagesDb();
+        // Get all email UIDs in our local DB
+        const localRows = dbAll(db, "SELECT email_uid FROM messages WHERE source = 'email' AND email_uid IS NOT NULL");
+        const localUids = new Set(localRows.map((r: any) => r.email_uid));
+        const serverUidSet = new Set(serverUids);
+
+        // UIDs in local but not on server → removed/archived elsewhere, delete from local
+        const removedUids: number[] = [];
+        for (const uid of localUids) {
+          if (!serverUidSet.has(uid)) removedUids.push(uid);
+        }
+        if (removedUids.length > 0) {
+          for (const uid of removedUids) {
+            db.run("DELETE FROM messages WHERE id = ?", [`email:${uid}`]);
+          }
+          scheduleDbSave();
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('emails-removed', removedUids);
+          }
+        }
+
+        // UIDs on server but not local → new messages, fetch them
+        const newUids = serverUids.filter(uid => !localUids.has(uid));
+        if (newUids.length > 0) {
+          const messages: any[] = [];
+          const uidRange = newUids.join(',');
+          for await (const msg of client.fetch(uidRange, { envelope: true, bodyStructure: true, source: { maxLength: 2000 }, uid: true }, { uid: true })) {
+            const bodyText = msg.source ? msg.source.toString().replace(/[\r\n]+/g, ' ').slice(0, 200) : '';
+            messages.push({
+              subject: msg.envelope.subject || '(no subject)',
+              from: msg.envelope.from?.[0]?.address || 'unknown',
+              date: msg.envelope.date?.toISOString?.() || '',
+              preview: bodyText,
+              seq: msg.seq,
+              uid: msg.uid,
+            });
+          }
+          if (messages.length > 0) {
+            for (const msg of messages) {
+              const time = msg.date ? new Date(msg.date).getTime() : Date.now();
+              db.run(`INSERT OR REPLACE INTO messages (id, source, time, email_subject, email_from, email_preview, email_seq, email_uid, discord_author, discord_content, discord_attachments, date_str)
+                VALUES (?, 'email', ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?)`,
+                [`email:${msg.uid}`, time, msg.subject, msg.from, msg.preview, msg.seq, msg.uid, msg.date]);
+            }
+            scheduleDbSave();
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('new-emails', messages);
+            }
+          }
+        }
+      }
+    } catch { /* reconciliation failed, not critical */ }
+
+    // Track the current message count to detect new arrivals
+    let knownCount = client.mailbox?.exists || 0;
+
+    client.on('exists', async (newCount: number) => {
+      if (newCount <= knownCount) { knownCount = newCount; return; }
+      // Fetch new messages
+      const startSeq = knownCount + 1;
+      knownCount = newCount;
+      try {
+        const messages: any[] = [];
+        for await (const msg of client.fetch(`${startSeq}:*`, { envelope: true, bodyStructure: true, source: { maxLength: 2000 }, uid: true })) {
+          const bodyText = msg.source ? msg.source.toString().replace(/[\r\n]+/g, ' ').slice(0, 200) : '';
+          messages.push({
+            subject: msg.envelope.subject || '(no subject)',
+            from: msg.envelope.from?.[0]?.address || 'unknown',
+            date: msg.envelope.date?.toISOString?.() || '',
+            preview: bodyText,
+            seq: msg.seq,
+            uid: msg.uid,
+          });
+        }
+        if (messages.length > 0 && mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('new-emails', messages);
+          const db = await getMessagesDb();
+          for (const msg of messages) {
+            const time = msg.date ? new Date(msg.date).getTime() : Date.now();
+            db.run(`INSERT OR REPLACE INTO messages (id, source, time, email_subject, email_from, email_preview, email_seq, email_uid, discord_author, discord_content, discord_attachments, date_str)
+              VALUES (?, 'email', ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?)`,
+              [`email:${msg.uid}`, time, msg.subject, msg.from, msg.preview, msg.seq, msg.uid, msg.date]);
+          }
+          scheduleDbSave();
+        }
+      } catch { /* fetch failed, will get them next sync */ }
+    });
+
+    // Handle EXPUNGE — message removed from INBOX while connected
+    client.on('expunge', async (info: { seq: number }) => {
+      // We can't easily map seq→uid during expunge since the seq changes.
+      // Instead, do a quick reconciliation: fetch all current UIDs and diff.
+      try {
+        const currentUids: number[] = [];
+        for await (const msg of client.fetch('1:*', { uid: true })) {
+          currentUids.push(msg.uid);
+        }
+        const currentUidSet = new Set(currentUids);
+        const db = await getMessagesDb();
+        const localRows = dbAll(db, "SELECT email_uid FROM messages WHERE source = 'email' AND email_uid IS NOT NULL");
+        const removedUids: number[] = [];
+        for (const row of localRows) {
+          if (!currentUidSet.has(row.email_uid)) removedUids.push(row.email_uid);
+        }
+        if (removedUids.length > 0) {
+          for (const uid of removedUids) {
+            db.run("DELETE FROM messages WHERE id = ?", [`email:${uid}`]);
+          }
+          scheduleDbSave();
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('emails-removed', removedUids);
+          }
+        }
+        knownCount = currentUids.length;
+      } catch { /* reconciliation failed */ }
+    });
+
+    // Handle connection close — reconnect
+    client.on('close', () => {
+      imapIdleClient = null;
+      imapIdleReconnectTimer = setTimeout(startImapIdle, 10000);
+    });
+
+  } catch (err) {
+    console.error('IMAP IDLE connect failed:', err);
+    imapIdleClient = null;
+    imapIdleReconnectTimer = setTimeout(startImapIdle, 30000);
+  }
+}
+
+function stopImapIdle() {
+  if (imapIdleReconnectTimer) { clearTimeout(imapIdleReconnectTimer); imapIdleReconnectTimer = null; }
+  if (imapIdleClient) {
+    try { imapIdleClient.logout(); } catch { /* ignore */ }
+    imapIdleClient = null;
+  }
+}
+
+// Discord polling — check for new messages every 60 seconds
+let discordPollTimer: ReturnType<typeof setTimeout> | null = null;
+let discordLatestId: string | null = null;
+
+async function pollDiscord() {
+  const s = loadSettings();
+  const token = s.discordBotToken?.trim();
+  if (!token) return;
+  const channelIds = s.discordChannelIds.split('\n').map((id: string) => id.trim()).filter(Boolean);
+  if (channelIds.length === 0) return;
+
+  for (const channelId of channelIds) {
+    try {
+      let url = `https://discord.com/api/v10/channels/${channelId}/messages?limit=10`;
+      const res = await fetch(url, { headers: { Authorization: `Bot ${token}` } });
+      if (!res.ok) continue;
+      const messages = await res.json();
+      const formatted = messages
+        .filter((m: { id: string }) => !discordLatestId || m.id > discordLatestId)
+        .map((m: { id: string; author: { username: string }; content: string; timestamp: string; attachments?: { url: string }[] }) => ({
+          id: m.id,
+          author: m.author.username,
+          content: m.content || '(no text)',
+          time: m.timestamp,
+          attachments: m.attachments?.length || 0,
+        }));
+      if (formatted.length > 0 && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('new-discord-messages', formatted);
+        // Update latest ID
+        const maxId = messages.reduce((max: string, m: { id: string }) => m.id > max ? m.id : max, discordLatestId || '0');
+        discordLatestId = maxId;
+        // Cache in DB
+        const db = await getMessagesDb();
+        for (const msg of formatted) {
+          const time = msg.time ? new Date(msg.time).getTime() : Date.now();
+          db.run(`INSERT OR REPLACE INTO messages (id, source, time, email_subject, email_from, email_preview, email_seq, email_uid, discord_author, discord_content, discord_attachments, date_str)
+            VALUES (?, 'discord', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?)`,
+            [`discord:${msg.id}`, time, msg.author, msg.content, msg.attachments, msg.time]);
+        }
+        scheduleDbSave();
+      }
+      // Track the latest ID even if we didn't send to renderer
+      if (messages.length > 0 && !discordLatestId) {
+        discordLatestId = messages[0].id;
+      }
+    } catch { /* skip */ }
+  }
+}
+
+function startDiscordPolling() {
+  stopDiscordPolling();
+  pollDiscord();
+  discordPollTimer = setInterval(pollDiscord, 60000);
+}
+
+function stopDiscordPolling() {
+  if (discordPollTimer) { clearInterval(discordPollTimer); discordPollTimer = null; }
+}
+
+// Start/stop listeners via IPC
+ipcMain.handle('start-message-sync', async () => {
+  startImapIdle();
+  startDiscordPolling();
+  return { success: true };
+});
+
+ipcMain.handle('stop-message-sync', () => {
+  stopImapIdle();
+  stopDiscordPolling();
+  return { success: true };
+});
+
+// Helper: run a SELECT and return all rows as objects
+function dbAll(db: any, sql: string, params: any[] = []): any[] {
+  const stmt = db.prepare(sql);
+  if (params.length > 0) stmt.bind(params);
+  const rows: any[] = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
+  return rows;
+}
+
+// Helper: run a SELECT and return first row as object, or null
+function dbGet(db: any, sql: string, params: any[] = []): any | null {
+  const stmt = db.prepare(sql);
+  if (params.length > 0) stmt.bind(params);
+  const row = stmt.step() ? stmt.getAsObject() : null;
+  stmt.free();
+  return row;
+}
+
+// Messages DB IPC
+ipcMain.handle('db-upsert-messages', async (_event, messages: any[]) => {
+  const db = await getMessagesDb();
+  for (const msg of messages) {
+    db.run(`INSERT OR REPLACE INTO messages (id, source, time, email_subject, email_from, email_preview, email_seq, email_uid, discord_author, discord_content, discord_attachments, date_str)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [msg.id, msg.source, msg.time, msg.email_subject, msg.email_from, msg.email_preview, msg.email_seq, msg.email_uid, msg.discord_author, msg.discord_content, msg.discord_attachments, msg.date_str]);
+  }
+  scheduleDbSave();
+  return { success: true };
+});
+
+ipcMain.handle('db-get-messages', async (_event, opts?: { source?: string; beforeTime?: number; limit?: number }) => {
+  const db = await getMessagesDb();
+  const limit = opts?.limit || 50;
+  let query = 'SELECT * FROM messages';
+  const params: any[] = [];
+  const conditions: string[] = [];
+  if (opts?.source) { conditions.push('source = ?'); params.push(opts.source); }
+  if (opts?.beforeTime) { conditions.push('time < ?'); params.push(opts.beforeTime); }
+  if (conditions.length > 0) query += ' WHERE ' + conditions.join(' AND ');
+  query += ' ORDER BY time DESC LIMIT ?';
+  params.push(limit);
+  return dbAll(db, query, params);
+});
+
+ipcMain.handle('db-get-email-body', async (_event, uid: number) => {
+  const db = await getMessagesDb();
+  return dbGet(db, 'SELECT * FROM email_bodies WHERE uid = ?', [uid]);
+});
+
+ipcMain.handle('db-save-email-body', async (_event, body: { uid: number; subject: string; sender: string; recipient: string; date_str: string; body: string; html: string }) => {
+  const db = await getMessagesDb();
+  db.run(`INSERT OR REPLACE INTO email_bodies (uid, subject, sender, recipient, date_str, body, html, fetched_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [body.uid, body.subject, body.sender, body.recipient, body.date_str, body.body, body.html, Date.now()]);
+  scheduleDbSave();
+  return { success: true };
+});
+
+ipcMain.handle('db-create-custom-message', async (_event, msg: { subject: string; sender: string; body: string }) => {
+  const db = await getMessagesDb();
+  const id = `custom:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const time = Date.now();
+  db.run('INSERT INTO custom_messages (id, time, subject, sender, body) VALUES (?, ?, ?, ?, ?)',
+    [id, time, msg.subject, msg.sender, msg.body]);
+  db.run(`INSERT INTO messages (id, source, time, email_subject, email_from, email_preview, email_seq, email_uid, discord_author, discord_content, discord_attachments, date_str)
+    VALUES (?, 'custom', ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, ?)`,
+    [id, time, msg.subject, msg.sender, msg.body.slice(0, 200), new Date(time).toISOString()]);
+  scheduleDbSave();
+  return { id, time };
+});
+
+ipcMain.handle('db-get-custom-message', async (_event, id: string) => {
+  const db = await getMessagesDb();
+  return dbGet(db, 'SELECT * FROM custom_messages WHERE id = ?', [id]);
+});
+
+ipcMain.handle('db-save-cursors', (_event, cursors: any) => {
+  saveCursors(cursors);
+  return { success: true };
+});
+
+ipcMain.handle('db-load-cursors', () => {
+  return loadCursors();
+});
+
 // Tabs persistence IPC
 ipcMain.handle('load-tabs', () => {
   try {
@@ -710,32 +1324,229 @@ function buildCustomTools(settings: Settings): CustomToolDef[] {
       }),
       execute: async ({ question }, { settings: s, abortSignal }) => {
         if (!question || typeof question !== 'string') return 'Error: Missing question';
-        if (!s.openclawUrl) return 'Error: No OpenClaw server URL configured. Open Settings to add one.';
-        const baseUrl = s.openclawUrl.replace(/\/+$/, '');
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (s.openclawToken) headers['Authorization'] = `Bearer ${s.openclawToken}`;
-        try {
-          const res = await fetch(`${baseUrl}/v1/chat/completions`, {
-            method: 'POST',
-            headers: { ...headers, 'x-openclaw-agent-id': 'main' },
-            body: JSON.stringify({
-              model: 'openclaw',
-              messages: [{ role: 'user', content: question.trim() }],
-            }),
-            signal: abortSignal,
+
+        // Run setup script if configured (e.g. SSH tunnel) — only once per session
+        if (s.openclawSetupScript && !openclawSetupRan) {
+          openclawSetupRan = true;
+          await new Promise<void>((resolve) => {
+            exec(s.openclawSetupScript, { timeout: 30000, shell: process.env.SHELL || '/bin/zsh' }, (err) => {
+              if (err) console.log('[openclaw] setup script error (may be ok if tunnel already exists):', err.message);
+              else console.log('[openclaw] setup script completed');
+              resolve();
+            });
           });
-          if (!res.ok) return `Error: OpenClaw returned ${res.status} ${res.statusText}`;
-          const data = await res.json();
-          return data.choices?.[0]?.message?.content || JSON.stringify(data);
-        } catch (err: any) {
-          if (err?.name === 'AbortError') return 'Error: Request aborted';
-          return `Error: Failed to reach OpenClaw server: ${err?.message || err}`;
+          // Give the tunnel a moment to establish
+          await new Promise(r => setTimeout(r, 2000));
+        }
+
+        if (!s.openclawUrl) return 'Error: No OpenClaw server URL configured. Open Settings > OpenClaw to add one.';
+        if (!s.openclawToken) return 'Error: No OpenClaw gateway token configured. Open Settings > OpenClaw to add one.';
+
+        const OC_TOKEN = s.openclawToken;
+        const OC_DEVICE_ID = 'b915a2ddfc8b3991b09a8634b44d8ab179fea7ae2c9bd53a0c48f7510a6cb593';
+        const OC_PRIVATE_KEY = '-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIOUsDLrys5GNNo30bOOdYSBcxBcUcVS22y1iFJjnF1Qz\n-----END PRIVATE KEY-----';
+        const OC_PUBLIC_KEY = '-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA9QyOLuLvrYRaaDSesj6US4RwmMB/Cc4jU1Fl8OObAhY=\n-----END PUBLIC KEY-----';
+        const pubDer = crypto.createPublicKey(OC_PUBLIC_KEY).export({ type: 'spki', format: 'der' });
+        const pubB64url = pubDer.subarray(-32).toString('base64url');
+
+        const wsUrl = s.openclawUrl.replace(/\/+$/, '').replace(/^http/, 'ws') + '/ws';
+        const originUrl = s.openclawUrl.replace(/\/+$/, '');
+
+        return new Promise<string>((resolve) => {
+          const ws = new WebSocket(wsUrl, { headers: { Origin: originUrl } } as any);
+          let settled = false;
+          let connected = false;
+          let fullText = '';
+          const finish = (result: string) => { if (!settled) { settled = true; try { ws.close(); } catch {} resolve(result); } };
+          const timeout = setTimeout(() => finish(fullText || 'Error: OpenClaw timed out (10m)'), 600000);
+
+          abortSignal?.addEventListener('abort', () => { clearTimeout(timeout); finish(fullText || 'Error: Request aborted'); }, { once: true });
+
+          ws.onmessage = (event: any) => {
+            try {
+              const msg = JSON.parse(String(event.data));
+
+              // Step 1: Respond to challenge
+              if (msg.type === 'event' && msg.event === 'connect.challenge') {
+                const nonce = msg.payload.nonce;
+                const signedAt = Date.now();
+                const payload = ['v2', OC_DEVICE_ID, 'cli', 'cli', 'operator', 'operator.admin', String(signedAt), OC_TOKEN, nonce].join('|');
+                const sig = crypto.sign(null, Buffer.from(payload, 'utf8'), crypto.createPrivateKey(OC_PRIVATE_KEY));
+                ws.send(JSON.stringify({
+                  type: 'req', id: crypto.randomUUID(), method: 'connect',
+                  params: {
+                    minProtocol: 3, maxProtocol: 3,
+                    client: { id: 'cli', version: 'dev', platform: 'linux', mode: 'cli', instanceId: crypto.randomUUID() },
+                    role: 'operator', scopes: ['operator.admin'],
+                    device: { id: OC_DEVICE_ID, publicKey: pubB64url, signature: sig.toString('base64url'), signedAt, nonce },
+                    caps: [], auth: { token: OC_TOKEN }, userAgent: 'bordeaux', locale: 'en',
+                  },
+                }));
+                return;
+              }
+
+              // Step 2: After connect OK, send chat
+              if (msg.type === 'res' && msg.ok && !connected) {
+                connected = true;
+                ws.send(JSON.stringify({
+                  type: 'req', id: crypto.randomUUID(), method: 'chat.send',
+                  params: {
+                    sessionKey: 'agent:main:bordeaux-' + crypto.randomUUID(),
+                    idempotencyKey: crypto.randomUUID(),
+                    message: question.trim(),
+                  },
+                }));
+                return;
+              }
+
+              // Step 3: Collect streaming response
+              if (msg.type === 'event' && msg.event === 'agent' && msg.payload?.stream === 'assistant' && msg.payload?.data?.delta) {
+                fullText += msg.payload.data.delta;
+              }
+
+              // Step 4: Done when lifecycle phase=end
+              if (msg.type === 'event' && msg.event === 'agent' && msg.payload?.stream === 'lifecycle' && msg.payload?.data?.phase === 'end') {
+                clearTimeout(timeout);
+                finish(fullText || '(empty response)');
+              }
+
+              // Handle errors
+              if (msg.type === 'res' && !msg.ok) {
+                clearTimeout(timeout);
+                finish(`Error: ${msg.error?.message || JSON.stringify(msg.error)}`);
+              }
+            } catch {
+              // ignore parse errors for non-JSON frames
+            }
+          };
+
+          ws.onerror = (err: any) => { clearTimeout(timeout); finish(`Error: WebSocket error: ${err?.message || 'connection failed'}`); };
+          ws.onclose = () => { clearTimeout(timeout); finish(fullText || 'Error: WebSocket closed before response'); };
+        });
+      },
+    },
+    {
+      ...bashToolSpec,
+      inputSchema: z.object({
+        command: z.string(),
+      }),
+      execute: async ({ command }, { abortSignal }) => {
+        if (!command || typeof command !== 'string') return 'Error: Missing command';
+        const trimmed = command.trim();
+        if (!trimmed) return 'Error: Empty command';
+        return new Promise<string>((resolve) => {
+          const child = exec(trimmed, { timeout: 30000, maxBuffer: 1024 * 1024, shell: process.env.SHELL || '/bin/zsh' }, (error, stdout, stderr) => {
+            const parts: string[] = [];
+            if (stdout) parts.push(stdout);
+            if (stderr) parts.push(`stderr:\n${stderr}`);
+            if (error && error.killed) parts.push('Error: Command timed out (30s)');
+            else if (error) parts.push(`Exit code: ${error.code}`);
+            resolve(parts.join('\n').trim() || '(no output)');
+          });
+          abortSignal?.addEventListener('abort', () => child.kill(), { once: true });
+        });
+      },
+    },
+    {
+      ...thinkingToolSpec,
+      inputSchema: z.object({
+        thought: z.string(),
+      }),
+      execute: async ({ thought }) => {
+        return thought || '(empty thought)';
+      },
+    },
+    {
+      ...readDiscordToolSpec,
+      inputSchema: z.object({
+        channelId: z.string(),
+        limit: z.number(),
+      }),
+      execute: async ({ channelId, limit }: { channelId: string; limit: number }, { settings: s }) => {
+        const token = s.discordBotToken?.trim();
+        if (!token) return 'Error: No Discord bot token configured. Open Settings > Discord to add one.';
+        const channelIds = s.discordChannelIds.split('\n').map((id: string) => id.trim()).filter(Boolean);
+        const targetChannel = (channelId && channelId.trim()) || channelIds[0];
+        if (!targetChannel) return 'Error: No channel ID provided and none configured in Settings > Discord.';
+
+        const count = Math.min(limit || 25, 50);
+        try {
+          const res = await fetch(`https://discord.com/api/v10/channels/${targetChannel}/messages?limit=${count}`, {
+            headers: { Authorization: `Bot ${token}` },
+          });
+          if (!res.ok) return `Error: Discord API returned ${res.status} ${res.statusText}`;
+          const messages = await res.json();
+          const formatted = messages.map((m: { author: { username: string }; content: string; timestamp: string; attachments?: { url: string }[] }) => ({
+            author: m.author.username,
+            content: m.content || '(no text)',
+            time: m.timestamp,
+            attachments: m.attachments?.length || 0,
+          }));
+          return JSON.stringify({ channelId: targetChannel, messages: formatted, availableChannels: channelIds });
+        } catch (err: unknown) {
+          return `Error: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      },
+    },
+    {
+      ...readEmailToolSpec,
+      inputSchema: z.object({
+        accountLabel: z.string(),
+        limit: z.number(),
+      }),
+      execute: async ({ accountLabel, limit }: { accountLabel: string; limit: number }, { settings: s }) => {
+        if (!s.emailAccounts || s.emailAccounts.length === 0) return 'Error: No email accounts configured. Open Settings > Email to add one.';
+        const account = (accountLabel && accountLabel.trim())
+          ? s.emailAccounts.find((a: EmailAccount) => a.label.toLowerCase() === accountLabel.toLowerCase() || a.email.toLowerCase() === accountLabel.toLowerCase())
+          : s.emailAccounts[0];
+        if (!account) return `Error: Email account "${accountLabel}" not found. Available: ${s.emailAccounts.map((a: EmailAccount) => a.label || a.email).join(', ')}`;
+        if (!account.imap.host || !account.imap.username) return `Error: IMAP not configured for ${account.label || account.email}. Open Settings > Email.`;
+
+        const count = Math.min(limit || 10, 30);
+        const { ImapFlow } = require('imapflow');
+        const client = new ImapFlow({
+          host: account.imap.host,
+          port: account.imap.port,
+          secure: account.imap.security === 'tls',
+          auth: { user: account.imap.username, pass: account.imap.password },
+          logger: false,
+          tls: account.imap.security === 'starttls' ? { rejectUnauthorized: false } : undefined,
+        });
+
+        try {
+          await client.connect();
+          const lock = await client.getMailboxLock('INBOX');
+          try {
+            const messageCount = client.mailbox?.exists || 0;
+            if (messageCount === 0) return JSON.stringify({ account: account.label || account.email, messageCount: 0, messages: [] });
+
+            const startSeq = Math.max(1, messageCount - count + 1);
+            const messages: { subject: string; from: string; date: string; preview: string }[] = [];
+            for await (const msg of client.fetch(`${startSeq}:*`, { envelope: true, bodyStructure: true, source: { maxLength: 2000 } })) {
+              const bodyText = msg.source ? msg.source.toString().replace(/[\r\n]+/g, ' ').slice(0, 200) : '';
+              messages.push({
+                subject: msg.envelope.subject || '(no subject)',
+                from: msg.envelope.from?.[0]?.address || 'unknown',
+                date: msg.envelope.date?.toISOString?.() || '',
+                preview: bodyText,
+              });
+            }
+            messages.reverse();
+            return JSON.stringify({ account: account.label || account.email, messageCount, messages });
+          } finally {
+            lock.release();
+          }
+        } catch (err: unknown) {
+          return `Error: ${err instanceof Error ? err.message : String(err)}`;
+        } finally {
+          try { await client.logout(); } catch { /* ignore */ }
         }
       },
     },
   ];
 }
 
+let openclawSetupRan = false;
 const activeAbortControllers = new Map<string, AbortController>();
 
 ipcMain.on('chat-abort-stream', (_event, requestId: string) => {
@@ -1051,6 +1862,9 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  stopImapIdle();
+  stopDiscordPolling();
+  saveDbToDisk();
   app.quit();
 });
 

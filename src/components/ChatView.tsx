@@ -59,6 +59,7 @@ interface Props {
   initialQuery?: string;
   onInitialQueryConsumed?: (tabId: number) => void;
   visitHistory?: HistoryEntry[];
+  onOpenSpecialTab?: () => void;
 }
 
 function looksLikeUrl(input: string): boolean {
@@ -252,7 +253,7 @@ function applySearchResultsToMessages(messages: DisplayMessage[], searchResults?
 
 let nextRequestId = 0;
 
-export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, onTitleChange, onNavigate, onOpenLink, onThinkingChange, initialQuery, onInitialQueryConsumed, visitHistory = [] }: Props) {
+export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, onTitleChange, onNavigate, onOpenLink, onThinkingChange, initialQuery, onInitialQueryConsumed, visitHistory = [], onOpenSpecialTab }: Props) {
   const [isTyping, setIsTyping] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [inputValue, setInputValue] = useState('');
@@ -461,6 +462,16 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
       return;
     }
 
+    // If no existing messages and input is "email", "discord", etc., open Messages tab
+    if (messages.length === 0 && text && pendingImages.length === 0) {
+      const lower = text.toLowerCase().trim();
+      if (lower === 'email' || lower === 'mail' || lower === 'inbox' || lower === 'discord' || lower === 'messages') {
+        setInputValue('');
+        onOpenSpecialTab?.();
+        return;
+      }
+    }
+
     const images = [...pendingImages];
     const pdfs = [...pendingPdfs];
     setInputValue('');
@@ -510,6 +521,13 @@ Do not send Option A until you have already used the search tool, unless the use
 If you respond with Option A instead of a tool call, that is the end of your turn. Do not expect any more tools to run after a direct response. The user must send another message before you can continue.
 
 When multiple tool calls would help, call as many as possible in parallel in a single Option B response instead of serializing them across multiple turns.
+
+Use the thinking tool frequently to share your honest, unfiltered reasoning with the user. Call it before making decisions, when weighing tradeoffs, when you are unsure, or when your approach changes. Do not hold back — the user wants radical transparency into your thought process.
+
+If the user asks you to do something that you cannot do with your current tools (e.g. access files, run code, manage servers, interact with services, or anything beyond web search and text generation), always try consultOpenclaw. OpenClaw is a powerful agent running on the user's server with access to tools, memory, and the ability to execute tasks on their behalf. When in doubt, ask OpenClaw. IMPORTANT: OpenClaw has NO context of your conversation — each call starts a fresh session. You must include all relevant context, background, and details in your question every time you consult it.
+
+When using the bash tool and you cd into a directory, ALWAYS first check for AGENTS.md or CLAUDE.md files in that directory and all parent directories by running: d="$PWD"; while [ "$d" != "/" ]; do cat "$d/AGENTS.md" "$d/CLAUDE.md" 2>/dev/null; d="$(dirname "$d")"; done
+If any are found, read and follow their instructions.
 
 IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within the output string. Escape quotes with \\".` },
       ...newMessages
@@ -758,6 +776,14 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
                       {msg.toolCalls.map((tc) => (
                         <ToolCallRow key={tc.toolCallId} toolCall={tc} />
                       ))}
+                      {msg.toolCalls.some(tc => (tc.toolName === 'readEmail' || tc.toolName === 'readDiscord') && tc.status === 'done') && (
+                        <button
+                          onClick={() => onOpenSpecialTab?.()}
+                          className="self-start flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors cursor-pointer mt-1"
+                        >
+                          <FiArrowRight size={12} /> Open Messages
+                        </button>
+                      )}
                     </div>
                   )}
                   <div
@@ -879,6 +905,14 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
               {pendingToolCalls.map((tc) => (
                 <ToolCallRow key={tc.toolCallId} toolCall={tc} />
               ))}
+              {pendingToolCalls.some(tc => (tc.toolName === 'readEmail' || tc.toolName === 'readDiscord') && tc.status === 'done') && (
+                <button
+                  onClick={() => onOpenSpecialTab?.()}
+                  className="self-start flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors cursor-pointer mt-1"
+                >
+                  <FiArrowRight size={12} /> Open Messages
+                </button>
+              )}
             </div>
           )}
           {isTyping && (

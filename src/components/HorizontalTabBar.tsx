@@ -1,4 +1,4 @@
-import { FiX, FiSidebar, FiPlus } from 'react-icons/fi';
+import { FiX, FiSidebar, FiPlus, FiInbox } from 'react-icons/fi';
 import type { TabInfo } from './WebviewContainer';
 
 interface Props {
@@ -15,7 +15,7 @@ interface Props {
   onCreateTab: () => void;
 }
 
-const btnClass = "p-1.5 w-8 border-none rounded-md bg-transparent text-neutral-500 dark:text-neutral-400 cursor-pointer flex items-center justify-center transition-colors hover:bg-black/6 dark:hover:bg-white/6 hover:text-black dark:hover:text-neutral-200 active:bg-black/10 dark:active:bg-white/12";
+const btnClass = "w-8 h-8 border-none rounded-md bg-transparent text-neutral-500 dark:text-neutral-400 cursor-pointer flex items-center justify-center transition-colors hover:bg-black/6 dark:hover:bg-white/6 hover:text-black dark:hover:text-neutral-200 active:bg-black/10 dark:active:bg-white/12";
 
 function Spinner() {
   return (
@@ -29,16 +29,16 @@ function Spinner() {
 export function HorizontalTabBar({ tabs, activeTabId, loadingTabs, favicons, thinkingTabs, unreadTabs, onSwitch, onClose, onToggleTabSidebar, tabSidebarOpen, onCreateTab }: Props) {
   return (
     <div className={`flex items-center h-11 gap-px px-3 bg-neutral-100 dark:bg-neutral-900 border-b border-neutral-300 dark:border-neutral-700 shrink-0 drag ${tabSidebarOpen ? '' : 'pl-[88px]'}`} style={{ transition: 'padding-left 200ms ease-in-out' }}>
-      <div className="flex gap-px shrink-0 no-drag mr-0.5 h-8">
+      <div className="flex gap-0.5 shrink-0 no-drag h-8">
         <button
           className={`${btnClass} ${tabSidebarOpen ? 'bg-black/10 dark:bg-white/12 text-black dark:text-neutral-200' : ''}`}
           title="Toggle Sidebar"
           onClick={onToggleTabSidebar}
         >
-          <FiSidebar size={14} />
+          <FiSidebar size={15} />
         </button>
         <button className={btnClass} title="New Tab" onClick={onCreateTab}>
-          <FiPlus size={14} />
+          <FiPlus size={15} />
         </button>
       </div>
       <div className="ml-2 flex items-center gap-px gap-x-1 overflow-x-auto min-w-0 no-drag">
@@ -47,6 +47,7 @@ export function HorizontalTabBar({ tabs, activeTabId, loadingTabs, favicons, thi
         const isLoading = tab.type === 'page' && loadingTabs[tab.id];
         const favicon = tab.type === 'page' && favicons[tab.id];
         const isChat = tab.type === 'chat';
+        const isMessages = tab.type === 'messages';
         const isThinking = isChat && thinkingTabs[tab.id];
         const isUnread = !isActive && unreadTabs[tab.id];
 
@@ -64,6 +65,8 @@ export function HorizontalTabBar({ tabs, activeTabId, loadingTabs, favicons, thi
               <Spinner />
             ) : favicon ? (
               <img src={favicon} className="w-3 h-3 shrink-0 rounded-sm" alt="" />
+            ) : isMessages ? (
+              <FiInbox size={12} className="shrink-0 text-blue-500" />
             ) : isUnread ? (
               <div className="w-2 h-2 shrink-0 rounded-full bg-blue-500" />
             ) : !isChat ? (

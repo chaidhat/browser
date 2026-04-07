@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { FiX, FiPlus, FiSettings } from 'react-icons/fi';
+import { FiX, FiPlus, FiSettings, FiCheckSquare, FiInbox } from 'react-icons/fi';
 import type { TabInfo } from './WebviewContainer';
 
 export interface Workspace {
@@ -18,7 +18,9 @@ interface Props {
   unreadTabs: Record<number, boolean>;
   onSwitch: (workspaceId: number) => void;
   onClose: (workspaceId: number) => void;
+  onRename: (workspaceId: number, name: string) => void;
   onCreate: () => void;
+  onGenerateTodos: () => void;
   onReorder: (workspaces: Workspace[]) => void;
   onOpenSettings: () => void;
 }
@@ -38,9 +40,12 @@ function getWorkspaceDisplay(ws: Workspace) {
   return { name, activeTab };
 }
 
-export function WorkspaceSidebar({ workspaces, activeWorkspaceId, loadingTabs, favicons, thinkingTabs, unreadTabs, onSwitch, onClose, onCreate, onReorder, onOpenSettings }: Props) {
+export function WorkspaceSidebar({ workspaces, activeWorkspaceId, loadingTabs, favicons, thinkingTabs, unreadTabs, onSwitch, onClose, onRename, onCreate, onGenerateTodos, onReorder, onOpenSettings }: Props) {
   const [dragId, setDragId] = useState<number | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: number; position: 'before' | 'after' } | null>(null);
+  const [renamingId, setRenamingId] = useState<number | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
   const dragNodeRef = useRef<HTMLDivElement | null>(null);
 
   const handleDragStart = (e: React.DragEvent, id: number) => {
@@ -93,6 +98,7 @@ export function WorkspaceSidebar({ workspaces, activeWorkspaceId, loadingTabs, f
           const isLoading = activeTab?.type === 'page' && loadingTabs[activeTab.id];
           const favicon = activeTab?.type === 'page' && favicons[activeTab.id];
           const isChat = activeTab?.type === 'chat';
+          const isMessages = activeTab?.type === 'messages';
           const isThinking = ws.tabs.some(t => t.type === 'chat' && thinkingTabs[t.id]);
           const isUnread = ws.tabs.some(t => unreadTabs[t.id]) && ws.id !== activeWorkspaceId;
           const showLineBefore = dropTarget?.id === ws.id && dropTarget.position === 'before' && dragId !== ws.id;
@@ -119,10 +125,17 @@ export function WorkspaceSidebar({ workspaces, activeWorkspaceId, loadingTabs, f
                 onContextMenu={async (e) => {
                   e.preventDefault();
                   const items = [
+                    { label: 'Rename Workspace', id: 'rename' },
                     { label: 'Close Workspace', id: 'close' },
                   ];
                   const action = await window.browser.showContextMenu(items);
                   if (action === 'close') onClose(ws.id);
+                  if (action === 'rename') {
+                    const { name: currentName } = getWorkspaceDisplay(ws);
+                    setRenamingId(ws.id);
+                    setRenameValue(currentName);
+                    requestAnimationFrame(() => renameInputRef.current?.select());
+                  }
                 }}
                 onClick={(e) => {
                   if (!(e.target as HTMLElement).closest('.tab-close-btn')) {
@@ -134,6 +147,8 @@ export function WorkspaceSidebar({ workspaces, activeWorkspaceId, loadingTabs, f
                   <Spinner />
                 ) : favicon ? (
                   <img src={favicon} className="w-3.5 h-3.5 shrink-0 rounded-sm" alt="" />
+                ) : isMessages ? (
+                  <FiInbox size={13} className="shrink-0 text-blue-500" />
                 ) : isChat && isUnread ? (
                   <div className="w-2 h-2 shrink-0 rounded-full bg-blue-500" />
                 ) : isChat ? (
@@ -141,9 +156,30 @@ export function WorkspaceSidebar({ workspaces, activeWorkspaceId, loadingTabs, f
                 ) : (
                   <div className="w-3.5 h-3.5 shrink-0 rounded-sm bg-neutral-300 dark:bg-neutral-600" />
                 )}
-                <span className={`overflow-hidden text-ellipsis whitespace-nowrap flex-1 min-w-0 text-xs leading-none ${isThinking ? 'bg-gradient-to-r from-neutral-300 via-neutral-500 to-neutral-300 dark:from-neutral-600 dark:via-neutral-300 dark:to-neutral-600 bg-[length:200%_100%] bg-clip-text [-webkit-background-clip:text] [-webkit-text-fill-color:transparent] animate-shimmer' : ''}`}>
-                  {name}
-                </span>
+                {renamingId === ws.id ? (
+                  <input
+                    ref={renameInputRef}
+                    className="flex-1 min-w-0 text-xs leading-none bg-transparent border-none outline-none text-black dark:text-neutral-200 p-0 m-0"
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onBlur={() => {
+                      const trimmed = renameValue.trim();
+                      onRename(ws.id, trimmed);
+                      setRenamingId(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        (e.target as HTMLInputElement).blur();
+                      } else if (e.key === 'Escape') {
+                        setRenamingId(null);
+                      }
+                    }}
+                  />
+                ) : (
+                  <span className={`overflow-hidden text-ellipsis whitespace-nowrap flex-1 min-w-0 text-xs leading-none ${isThinking ? 'bg-gradient-to-r from-neutral-300 via-neutral-500 to-neutral-300 dark:from-neutral-600 dark:via-neutral-300 dark:to-neutral-600 bg-[length:200%_100%] bg-clip-text [-webkit-background-clip:text] [-webkit-text-fill-color:transparent] animate-shimmer' : ''}`}>
+                    {name}
+                  </span>
+                )}
                 {tabCount > 1 && (
                   <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0">{tabCount}</span>
                 )}
@@ -173,6 +209,14 @@ export function WorkspaceSidebar({ workspaces, activeWorkspaceId, loadingTabs, f
           <span>Add Workspace</span>
         </button>
       </div>
+      <button
+        className="w-full h-[30px] border-none rounded-md bg-transparent text-neutral-500 dark:text-neutral-400 cursor-pointer flex items-center px-2.5 gap-1.5 shrink-0 no-drag transition-colors hover:bg-black/8 dark:hover:bg-white/8 hover:text-black dark:hover:text-neutral-200 text-xs select-none"
+        title="Sync"
+        onClick={onGenerateTodos}
+      >
+        <FiCheckSquare size={13} />
+        <span>Sync</span>
+      </button>
       <button
         className="w-full h-[30px] border-none rounded-md bg-transparent text-neutral-500 dark:text-neutral-400 cursor-pointer flex items-center px-2.5 gap-1.5 shrink-0 no-drag transition-colors hover:bg-black/8 dark:hover:bg-white/8 hover:text-black dark:hover:text-neutral-200 text-xs select-none mb-1"
         title="Settings"

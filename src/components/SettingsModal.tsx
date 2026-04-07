@@ -14,7 +14,7 @@ const selectClass = "w-full h-9 px-2 border border-neutral-300 dark:border-neutr
 const labelClass = "block text-[13px] font-medium mb-1.5 text-neutral-700 dark:text-neutral-300";
 const helpClass = "text-[11px] text-neutral-400 dark:text-neutral-500 mt-1.5";
 
-type SettingsTab = 'keys' | 'openclaw' | 'appearance' | 'data';
+type SettingsTab = 'keys' | 'openclaw' | 'discord' | 'email' | 'appearance' | 'data';
 
 export function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('keys');
@@ -25,14 +25,15 @@ export function SettingsPage() {
   const [serperKey, setSerperKey] = useState('');
   const [openclawUrl, setOpenclawUrl] = useState('');
   const [openclawToken, setOpenclawToken] = useState('');
+  const [openclawSetupScript, setOpenclawSetupScript] = useState('');
+  const [discordBotToken, setDiscordBotToken] = useState('');
+  const [discordChannelIds, setDiscordChannelIds] = useState('');
   const [font, setFont] = useState<'geist' | 'pt-serif'>('pt-serif');
   const [theme, setTheme] = useState<'light' | 'sunset' | 'dark' | 'system'>('system');
   const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [isTesting, setIsTesting] = useState(false);
-  const [openclawTestResult, setOpenclawTestResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  const [isTestingOpenclaw, setIsTestingOpenclaw] = useState(false);
 
   useEffect(() => {
     window.browser.getSettings().then(settings => {
@@ -43,6 +44,9 @@ export function SettingsPage() {
       setSerperKey(settings.serperKey || '');
       setOpenclawUrl(settings.openclawUrl || '');
       setOpenclawToken(settings.openclawToken || '');
+      setOpenclawSetupScript(settings.openclawSetupScript || '');
+      setDiscordBotToken(settings.discordBotToken || '');
+      setDiscordChannelIds(settings.discordChannelIds || '');
       setFont(settings.font || 'pt-serif');
       setTheme(settings.theme || 'system');
       setEmailAccounts(settings.emailAccounts || []);
@@ -111,6 +115,9 @@ export function SettingsPage() {
       serperKey: serperKey.trim(),
       openclawUrl: openclawUrl.trim(),
       openclawToken: openclawToken.trim(),
+      openclawSetupScript: openclawSetupScript.trim(),
+      discordBotToken: discordBotToken.trim(),
+      discordChannelIds: discordChannelIds.trim(),
       font,
       theme,
       emailAccounts,
@@ -121,6 +128,8 @@ export function SettingsPage() {
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: 'keys', label: 'Keys' },
     { id: 'openclaw', label: 'OpenClaw' },
+    { id: 'discord', label: 'Discord' },
+    { id: 'email', label: 'Email' },
     { id: 'appearance', label: 'Appearance' },
     { id: 'data', label: 'Data' },
   ];
@@ -192,43 +201,17 @@ export function SettingsPage() {
                 <p className={helpClass}>The Bearer token you configured for your OpenClaw gateway.</p>
               </div>
               <div className="mb-5">
-                <button
-                  className={`h-9 px-4 rounded-lg text-[13px] font-medium cursor-pointer transition-colors border-none ${
-                    isTestingOpenclaw
-                      ? 'bg-neutral-200 dark:bg-neutral-700 text-neutral-500 cursor-not-allowed'
-                      : 'bg-black dark:bg-white text-white dark:text-black hover:bg-neutral-800 dark:hover:bg-neutral-200'
-                  }`}
-                  disabled={isTestingOpenclaw || !openclawUrl.trim()}
-                  onClick={async () => {
-                    setIsTestingOpenclaw(true);
-                    setOpenclawTestResult(null);
-                    try {
-                      const baseUrl = openclawUrl.trim().replace(/\/+$/, '');
-                      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-                      if (openclawToken.trim()) headers['Authorization'] = `Bearer ${openclawToken.trim()}`;
-                      const res = await fetch(`${baseUrl}/v1/chat/completions`, {
-                        method: 'POST',
-                        headers: { ...headers, 'x-openclaw-agent-id': 'main' },
-                        body: JSON.stringify({ model: 'openclaw', messages: [{ role: 'user', content: 'ping' }] }),
-                      });
-                      if (res.ok) {
-                        setOpenclawTestResult({ type: 'success', message: 'Connected to OpenClaw server' });
-                      } else {
-                        setOpenclawTestResult({ type: 'error', message: `Server returned ${res.status} ${res.statusText}` });
-                      }
-                    } catch (err: unknown) {
-                      setOpenclawTestResult({ type: 'error', message: err instanceof Error ? err.message : 'Connection failed' });
-                    }
-                    setIsTestingOpenclaw(false);
-                  }}
-                >
-                  {isTestingOpenclaw ? 'Testing...' : 'Test Connection'}
-                </button>
-                {openclawTestResult && (
-                  <p className={`text-[12px] mt-2 ${openclawTestResult.type === 'success' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                    {openclawTestResult.message}
-                  </p>
-                )}
+                <label htmlFor="openclaw-setup-script" className={labelClass}>Setup Script</label>
+                <textarea
+                  id="openclaw-setup-script"
+                  className={inputClass + ' !h-20 py-2 resize-none'}
+                  placeholder="ssh -i ~/.ssh/key -L 28789:localhost:18789 -N -f user@host"
+                  spellCheck={false}
+                  autoComplete="off"
+                  value={openclawSetupScript}
+                  onChange={(e) => setOpenclawSetupScript(e.target.value)}
+                />
+                <p className={helpClass}>Shell command to run before connecting (e.g. SSH tunnel). Runs once per session.</p>
               </div>
             </>
           )}
@@ -284,8 +267,35 @@ export function SettingsPage() {
                 </div>
               </div>
 
-              {/* Email Accounts */}
-              <div className="mb-5 pt-4 border-t border-neutral-200 dark:border-neutral-700">
+            </>
+          )}
+
+          {activeTab === 'discord' && (
+            <>
+              <div className="mb-5">
+                <label htmlFor="discord-bot-token" className={labelClass}>Bot Token</label>
+                <input type="password" id="discord-bot-token" className={inputClass} placeholder="MTQ3NjM2..." spellCheck={false} autoComplete="off" value={discordBotToken} onChange={(e) => setDiscordBotToken(e.target.value)} />
+                <p className={helpClass}>Your Discord bot token. Get one at discord.com/developers/applications</p>
+              </div>
+              <div className="mb-5">
+                <label htmlFor="discord-channel-ids" className={labelClass}>Channel IDs</label>
+                <textarea
+                  id="discord-channel-ids"
+                  className={inputClass + ' !h-20 py-2 resize-none'}
+                  placeholder="1452863616385814632&#10;1477452980998635590"
+                  spellCheck={false}
+                  autoComplete="off"
+                  value={discordChannelIds}
+                  onChange={(e) => setDiscordChannelIds(e.target.value)}
+                />
+                <p className={helpClass}>One channel ID per line. The bot will have access to these channels.</p>
+              </div>
+            </>
+          )}
+
+          {activeTab === 'email' && (
+            <>
+              <div className="mb-5">
                 <label className={labelClass}>Email Accounts</label>
                 <p className={helpClass + ' !mt-0 mb-3'}>Configure IMAP and SMTP for email accounts.</p>
 

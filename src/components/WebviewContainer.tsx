@@ -4,7 +4,7 @@ export interface TabInfo {
   id: number;
   title: string;
   url: string;
-  type: 'chat' | 'page';
+  type: 'chat' | 'page' | 'messages';
 }
 
 export interface WebviewContainerHandle {

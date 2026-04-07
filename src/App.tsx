@@ -5,6 +5,7 @@ import { HorizontalTabBar } from './components/HorizontalTabBar';
 import { WebviewContainer, WebviewContainerHandle, TabInfo } from './components/WebviewContainer';
 import { ChatView, DisplayMessage } from './components/ChatView';
 import { DownloadBar, DownloadItem } from './components/DownloadBar';
+import { MessagesView } from './components/MessagesView';
 import { FindBar } from './components/FindBar';
 
 function playNotificationTone() {
@@ -65,12 +66,13 @@ type AppAction =
   | { type: 'CLOSE_WORKSPACE'; workspaceId: number }
   | { type: 'SWITCH_WORKSPACE'; workspaceId: number }
   | { type: 'REORDER_WORKSPACES'; workspaces: Workspace[] }
-  | { type: 'CREATE_TAB'; workspaceId?: number; url?: string }
+  | { type: 'CREATE_TAB'; workspaceId?: number; url?: string; tabType?: 'messages' }
   | { type: 'CLOSE_TAB'; tabId: number }
   | { type: 'SWITCH_TAB'; tabId: number }
   | { type: 'UPDATE_TAB'; tabId: number; title?: string; url?: string }
   | { type: 'CONVERT_TAB'; tabId: number; url: string }
   | { type: 'DUPLICATE_TAB'; tabId: number }
+  | { type: 'RENAME_WORKSPACE'; workspaceId: number; name: string }
   | { type: 'RESTORE'; state: AppState };
 
 function findWorkspaceForTab(state: AppState, tabId: number): Workspace | undefined {
@@ -139,6 +141,10 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, activeWorkspaceId: action.workspaceId };
     }
 
+    case 'RENAME_WORKSPACE': {
+      return updateWorkspace(state, action.workspaceId, ws => ({ ...ws, name: action.name }));
+    }
+
     case 'REORDER_WORKSPACES': {
       return { ...state, workspaces: action.workspaces };
     }
@@ -147,14 +153,32 @@ function appReducer(state: AppState, action: AppAction): AppState {
       const wsId = action.workspaceId ?? state.activeWorkspaceId;
       const ws = state.workspaces.find(w => w.id === wsId);
       if (!ws) return state;
+
+      // For messages tab, switch to existing one if it exists
+      if (action.tabType === 'messages') {
+        const existing = ws.tabs.find(t => t.type === 'messages');
+        if (existing) {
+          return {
+            ...updateWorkspace(state, wsId, w => ({ ...w, activeTabId: existing.id })),
+            activeWorkspaceId: wsId,
+          };
+        }
+      }
+
       const tabId = state.nextTabId;
-      const hasUrl = !!action.url;
-      const newTab: TabInfo = {
-        id: tabId,
-        title: hasUrl ? 'New Tab' : 'New Chat',
-        url: action.url || '',
-        type: hasUrl ? 'page' : 'chat',
-      };
+      let tabType: TabInfo['type'];
+      let title: string;
+      if (action.tabType === 'messages') {
+        tabType = 'messages';
+        title = 'Messages';
+      } else if (action.url) {
+        tabType = 'page';
+        title = 'New Tab';
+      } else {
+        tabType = 'chat';
+        title = 'New Chat';
+      }
+      const newTab: TabInfo = { id: tabId, title, url: action.url || '', type: tabType };
       return {
         ...updateWorkspace(state, wsId, w => ({
           ...w,
@@ -715,6 +739,8 @@ export default function App() {
   }, [activeTab?.type, activeTab?.id, chatHistories, appState.nextTabId]);
 
   const isChat = activeTab?.type === 'chat';
+  const isMessages = activeTab?.type === 'messages';
+  const isNonPage = activeTab?.type !== 'page';
 
   return (
     <div className="flex h-full w-full">
@@ -730,7 +756,13 @@ export default function App() {
           dispatch({ type: 'SWITCH_WORKSPACE', workspaceId: wsId });
         }}
         onClose={handleCloseWorkspace}
+        onRename={(wsId, name) => dispatch({ type: 'RENAME_WORKSPACE', workspaceId: wsId, name })}
         onCreate={() => dispatch({ type: 'CREATE_WORKSPACE' })}
+        onGenerateTodos={() => {
+          const newTabId = appState.nextTabId;
+          dispatch({ type: 'CREATE_WORKSPACE' });
+          setInitialQueries(prev => ({ ...prev, [newTabId]: 'say hi openai!' }));
+        }}
         onReorder={(workspaces) => dispatch({ type: 'REORDER_WORKSPACES', workspaces })}
         onOpenSettings={openSettings}
       />
@@ -754,7 +786,7 @@ export default function App() {
             onCreateTab={() => dispatch({ type: 'CREATE_TAB' })}
           />
         )}
-        {!(isChat && activeWorkspace && activeWorkspace.tabs.length >= 2) && (
+        {!(isNonPage && activeWorkspace && activeWorkspace.tabs.length >= 2) && (
           <Toolbar
             activeUrl={activeTab?.url || ''}
             loading={activeTab ? !!loadingTabs[activeTab.id] : false}
@@ -766,11 +798,12 @@ export default function App() {
             onToggleTabSidebar={() => setTabSidebarOpen(prev => !prev)}
             tabSidebarOpen={tabSidebarOpen}
             onOpenSettings={openSettings}
-            isChatTab={isChat}
+            isChatTab={isChat || isMessages}
             allTabs={allTabs}
             visitHistory={visitHistory}
             onCreateTab={() => dispatch({ type: 'CREATE_TAB' })}
             hasTabBar={!!activeWorkspace && activeWorkspace.tabs.length >= 2}
+            onOpenSpecialTab={(tabType) => dispatch({ type: 'CREATE_TAB', tabType })}
           />
         )}
         <div className="flex flex-1 min-h-0 relative">
@@ -797,7 +830,11 @@ export default function App() {
               initialQuery={initialQueries[tab.id]}
               onInitialQueryConsumed={(tabId) => setInitialQueries(prev => { const next = { ...prev }; delete next[tabId]; return next; })}
               visitHistory={visitHistory}
+              onOpenSpecialTab={() => dispatch({ type: 'CREATE_TAB', tabType: 'messages' })}
             />
+          ))}
+          {allTabs.filter(t => t.type === 'messages').map(tab => (
+            <MessagesView key={tab.id} tabId={tab.id} hidden={tab.id !== activeTab?.id} />
           ))}
           <WebviewContainer
             ref={webviewRef}
@@ -806,7 +843,7 @@ export default function App() {
             onTabUpdate={handleTabUpdate}
             onLoadingChange={handleLoadingChange}
             onFaviconChange={handleFaviconChange}
-            hidden={isChat}
+            hidden={isNonPage}
           />
         </div>
         <DownloadBar
