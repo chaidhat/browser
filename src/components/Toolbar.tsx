@@ -7,7 +7,7 @@ interface TabInfo {
   id: number;
   title: string;
   url: string;
-  type: 'chat' | 'page' | 'messages';
+  type: 'chat' | 'page' | 'messages' | 'notes' | 'history';
 }
 
 interface HistoryEntry {
@@ -38,7 +38,7 @@ interface Props {
   visitHistory?: HistoryEntry[];
   onCreateTab: () => void;
   hasTabBar?: boolean;
-  onOpenSpecialTab?: (tabType: 'messages') => void;
+  onOpenSpecialTab?: (tabType: 'messages' | 'notes' | 'history') => void;
 }
 
 const btnClass = "w-8 h-8 border-none rounded-md bg-transparent text-neutral-500 dark:text-neutral-400 cursor-pointer flex items-center justify-center transition-colors hover:bg-black/6 dark:hover:bg-white/6 hover:text-black dark:hover:text-neutral-200 active:bg-black/10 dark:active:bg-white/12";
@@ -219,6 +219,13 @@ export function Toolbar({
         inputRef.current?.blur();
         setUrlValue('');
         onOpenSpecialTab?.('messages');
+        return;
+      }
+      if (lower === 'notes' || lower === 'note') {
+        setShowDropdown(false);
+        inputRef.current?.blur();
+        setUrlValue('');
+        onOpenSpecialTab?.('notes');
         return;
       }
       setShowDropdown(false);

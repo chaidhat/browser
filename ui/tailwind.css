@@ -93,6 +93,42 @@ html.sunset {
   background: rgba(255, 255, 255, 0.25);
 }
 
+@utility scrollbar-none {
+  &::-webkit-scrollbar {
+    display: none;
+  }
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Global scrollbar styling for all elements */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+.sunset ::-webkit-scrollbar-thumb {
+  background: rgba(200, 160, 100, 0.2);
+}
+.sunset ::-webkit-scrollbar-thumb:hover {
+  background: rgba(200, 160, 100, 0.35);
+}
+
 /* Electron drag regions */
 @utility drag {
   -webkit-app-region: drag;

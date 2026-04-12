@@ -14,7 +14,7 @@ const selectClass = "w-full h-9 px-2 border border-neutral-300 dark:border-neutr
 const labelClass = "block text-[13px] font-medium mb-1.5 text-neutral-700 dark:text-neutral-300";
 const helpClass = "text-[11px] text-neutral-400 dark:text-neutral-500 mt-1.5";
 
-type SettingsTab = 'keys' | 'openclaw' | 'discord' | 'email' | 'appearance' | 'data';
+type SettingsTab = 'keys' | 'openclaw' | 'discord' | 'email' | 'appearance' | 'memory' | 'data';
 
 export function SettingsPage() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('keys');
@@ -32,6 +32,8 @@ export function SettingsPage() {
   const [theme, setTheme] = useState<'light' | 'sunset' | 'dark' | 'system'>('system');
   const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [selfPrompt, setSelfPrompt] = useState('');
+  const [memories, setMemories] = useState('');
   const [testResult, setTestResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [isTesting, setIsTesting] = useState(false);
 
@@ -50,6 +52,8 @@ export function SettingsPage() {
       setFont(settings.font || 'pt-serif');
       setTheme(settings.theme || 'system');
       setEmailAccounts(settings.emailAccounts || []);
+      setSelfPrompt(settings.selfPrompt || '');
+      setMemories(settings.memories || '');
     });
   }, []);
 
@@ -121,6 +125,8 @@ export function SettingsPage() {
       font,
       theme,
       emailAccounts,
+      selfPrompt: selfPrompt.trim(),
+      memories,
     });
     window.browser.closeWindow();
   };
@@ -131,6 +137,7 @@ export function SettingsPage() {
     { id: 'discord', label: 'Discord' },
     { id: 'email', label: 'Email' },
     { id: 'appearance', label: 'Appearance' },
+    { id: 'memory', label: 'Memory' },
     { id: 'data', label: 'Data' },
   ];
 
@@ -435,6 +442,39 @@ export function SettingsPage() {
                     </div>
                   )}
                 </div>
+              </div>
+            </>
+          )}
+
+          {activeTab === 'memory' && (
+            <>
+              <div className="mb-5">
+                <label htmlFor="self-prompt" className={labelClass}>Self</label>
+                <textarea
+                  id="self-prompt"
+                  className={`${inputClass} h-32 py-2 resize-y`}
+                  placeholder="Describe yourself — your role, preferences, and how the AI should interact with you..."
+                  spellCheck={false}
+                  value={selfPrompt}
+                  onChange={(e) => setSelfPrompt(e.target.value)}
+                />
+                <p className={helpClass}>This is always included in the AI's context for both chat and message sync.</p>
+              </div>
+              <div className="mb-5">
+                <label className={labelClass}>Memories</label>
+                <p className={helpClass + ' mb-2'}>The AI adds memories here automatically using the remember tool. These are read-only.</p>
+                {memories ? (
+                  <div className="w-full px-3 py-2 border border-neutral-300 dark:border-neutral-600 rounded-lg bg-neutral-50 dark:bg-neutral-900 text-[13px] font-mono text-neutral-700 dark:text-neutral-300 whitespace-pre-wrap leading-relaxed">
+                    {memories.split('\n').map((line, i) => (
+                      <div key={i} className="flex gap-2">
+                        <span className="text-neutral-400 dark:text-neutral-600 select-none shrink-0 w-5 text-right">{i + 1}</span>
+                        <span>{line}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[13px] text-neutral-400 dark:text-neutral-500 italic">No memories yet. The AI will add them as you chat.</p>
+                )}
               </div>
             </>
           )}

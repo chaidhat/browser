@@ -46,6 +46,12 @@ export const readEmailToolSpec: CustomToolSpec = {
   argsDescription: '{accountLabel: string, limit: number} — pass "" for accountLabel to use the default account, pass 0 for limit to use default',
 };
 
+export const rememberToolSpec: CustomToolSpec = {
+  name: 'remember',
+  description: 'Save a memory about the user, their preferences, or important context for future conversations. Use "append" mode to add a new memory line, or "edit" mode to replace specific lines by number. Memories persist across all conversations and are always visible to you.',
+  argsDescription: '{mode: "append" | "edit", content: string, lineNumbers: number[]} — append: adds content as new line(s), pass [] for lineNumbers. edit: replaces the specified lineNumbers with content (one line per number, or fewer to delete lines)',
+};
+
 export const customToolSpecs: CustomToolSpec[] = [
   searchToolSpec,
   consultModelToolSpec,
@@ -54,6 +60,7 @@ export const customToolSpecs: CustomToolSpec[] = [
   thinkingToolSpec,
   readDiscordToolSpec,
   readEmailToolSpec,
+  rememberToolSpec,
 ];
 
 export function buildCustomToolsPromptText(): string {

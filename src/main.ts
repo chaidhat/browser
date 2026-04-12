@@ -3,7 +3,8 @@ import path from 'path';
 import fs from 'fs';
 import { exec } from 'child_process';
 import crypto from 'crypto';
-import { consultModelToolSpec, consultOpenclawToolSpec, searchToolSpec, bashToolSpec, thinkingToolSpec, readDiscordToolSpec, readEmailToolSpec, type CustomToolSpec } from './customTools';
+import { v4 as uuidv4 } from 'uuid';
+import { consultModelToolSpec, consultOpenclawToolSpec, searchToolSpec, bashToolSpec, thinkingToolSpec, readDiscordToolSpec, readEmailToolSpec, rememberToolSpec, type CustomToolSpec } from './customTools';
 
 app.name = 'Pause';
 // Theme is applied after settings are loaded (see app.whenReady)
@@ -35,6 +36,8 @@ interface Settings {
   discordChannelIds: string;
   font: 'geist' | 'pt-serif';
   theme: 'light' | 'sunset' | 'dark' | 'system';
+  selfPrompt: string;
+  memories: string;
 }
 
 const settingsPath = path.join(app.getPath('userData'), 'settings.json');
@@ -42,6 +45,7 @@ const tabsPath = path.join(app.getPath('userData'), 'tabs.json');
 const historyPath = path.join(app.getPath('userData'), 'history.json');
 const messagesDbPath = path.join(app.getPath('userData'), 'messages.db');
 const cursorsPath = path.join(app.getPath('userData'), 'message-cursors.json');
+const notesDir = path.join(app.getPath('userData'), 'notes');
 
 // SQLite messages database (sql.js — pure JS, no native module)
 let _sqlJsDb: any = null;
@@ -93,8 +97,72 @@ async function getMessagesDb(): Promise<any> {
       sender TEXT,
       body TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS discord_users (
+      id TEXT PRIMARY KEY,
+      username TEXT NOT NULL
+    );
   `);
+  // Migration: add status and workspace_num columns to messages
+  try { _sqlJsDb.exec("ALTER TABLE messages ADD COLUMN status TEXT DEFAULT 'UNREAD'"); } catch {}
+  try { _sqlJsDb.exec("ALTER TABLE messages ADD COLUMN workspace_num INTEGER"); } catch {}
+  try { _sqlJsDb.exec("ALTER TABLE messages ADD COLUMN summary TEXT"); } catch {}
+  try { _sqlJsDb.exec("CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status)"); } catch {}
+  try { _sqlJsDb.exec("ALTER TABLE messages ADD COLUMN message_id TEXT"); } catch {}
   return _sqlJsDb;
+}
+
+// Save Discord user ID→username mappings and resolve mentions in text
+async function saveDiscordUsers(users: Map<string, string>) {
+  if (users.size === 0) return;
+  const db = await getMessagesDb();
+  for (const [id, username] of users) {
+    db.run('INSERT OR REPLACE INTO discord_users (id, username) VALUES (?, ?)', [id, username]);
+  }
+  scheduleDbSave();
+}
+
+async function fetchDiscordUser(userId: string): Promise<string | null> {
+  const s = loadSettings();
+  const token = s.discordBotToken?.trim();
+  if (!token) return null;
+  try {
+    const res = await fetch(`https://discord.com/api/v10/users/${userId}`, {
+      headers: { Authorization: `Bot ${token}` },
+    });
+    if (!res.ok) return null;
+    const user = await res.json();
+    if (user.username) {
+      const db = await getMessagesDb();
+      db.run('INSERT OR REPLACE INTO discord_users (id, username) VALUES (?, ?)', [userId, user.username]);
+      scheduleDbSave();
+      return user.username;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveDiscordMentions(text: string): Promise<string> {
+  const mentionPattern = /<@!?(\d+)>/g;
+  if (!mentionPattern.test(text)) return text;
+  const db = await getMessagesDb();
+  // Collect all unique IDs first
+  const ids = new Set<string>();
+  text.replace(/<@!?(\d+)>/g, (_, id) => { ids.add(id); return ''; });
+  // Resolve unknown IDs from Discord API
+  for (const id of ids) {
+    const row = dbGet(db, 'SELECT username FROM discord_users WHERE id = ?', [id]);
+    if (!row) {
+      await fetchDiscordUser(id);
+    }
+  }
+  // Now replace all mentions
+  return text.replace(/<@!?(\d+)>/g, (_, id) => {
+    const row = dbGet(db, 'SELECT username FROM discord_users WHERE id = ?', [id]);
+    return row ? `@${row.username}` : `@unknown(${id})`;
+  });
 }
 
 function saveDbToDisk() {
@@ -115,11 +183,11 @@ function scheduleDbSave() {
   }, 2000);
 }
 
-function saveCursors(cursors: { emailOldestSeq?: number | null; discordOldestId?: string | null }) {
+function saveCursors(cursors: { emailOldestSeq?: number | null; discordOldestId?: string | null; nextWorkspaceNum?: number }) {
   fs.writeFileSync(cursorsPath, JSON.stringify(cursors));
 }
 
-function loadCursors(): { emailOldestSeq?: number | null; discordOldestId?: string | null } {
+function loadCursors(): { emailOldestSeq?: number | null; discordOldestId?: string | null; nextWorkspaceNum?: number } {
   try {
     return JSON.parse(fs.readFileSync(cursorsPath, 'utf-8'));
   } catch {
@@ -127,7 +195,7 @@ function loadCursors(): { emailOldestSeq?: number | null; discordOldestId?: stri
   }
 }
 
-const settingsDefaults: Settings = { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', openclawUrl: 'http://localhost:28789', openclawToken: '740c59dae82325593b9ecc4672662f163f6e15f5e027bb4f', openclawSetupScript: 'lsof -ti :28789 | xargs kill -9 2>/dev/null; sleep 1; ssh -i /Users/chai/conductor/workspaces/browser/bordeaux/.context/attachments/chai-server-key.pem -L 28789:localhost:18789 -N -f -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=3 ubuntu@54.254.27.39', emailAccounts: [], discordBotToken: '', discordChannelIds: '', font: 'pt-serif', theme: 'system' };
+const settingsDefaults: Settings = { openaiKey: '', anthropicKey: '', googleKey: '', braveKey: '', serperKey: '', openclawUrl: 'http://localhost:28789', openclawToken: '740c59dae82325593b9ecc4672662f163f6e15f5e027bb4f', openclawSetupScript: 'lsof -ti :28789 | xargs kill -9 2>/dev/null; sleep 1; ssh -i /Users/chai/conductor/workspaces/browser/bordeaux/.context/attachments/chai-server-key.pem -L 28789:localhost:18789 -N -f -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=3 ubuntu@54.254.27.39', emailAccounts: [], discordBotToken: '', discordChannelIds: '', font: 'pt-serif', theme: 'system', selfPrompt: '', memories: '' };
 
 function applyTheme(theme: Settings['theme']): void {
   // 'sunset' is treated as dark at the OS level; the renderer handles the warm tint
@@ -324,26 +392,7 @@ function createWindow(): void {
         cleanup();
       });
     });
-    webContents.setWindowOpenHandler(({ url, disposition }) => {
-      // Allow popups for OAuth/login flows (disposition is 'new-window' for window.open)
-      if (disposition === 'new-window') {
-        return {
-          action: 'allow',
-          overrideBrowserWindowOptions: {
-            width: 500,
-            height: 700,
-            autoHideMenuBar: true,
-            webPreferences: {
-              nodeIntegration: false,
-              contextIsolation: true,
-            },
-          },
-        };
-      }
-      // Open regular links (target="_blank" etc.) in a new tab
-      mainWindow?.webContents.send('open-url-in-new-tab', url);
-      return { action: 'deny' };
-    });
+    // Popup handling is done globally via app.on('web-contents-created')
 
     // Enable pinch-to-zoom on webview content
     webContents.setVisualZoomLevelLimits(1, 5);
@@ -634,6 +683,56 @@ ipcMain.handle('archive-email', async (_event, opts: { uid: number; accountLabel
   }
 });
 
+ipcMain.handle('archive-emails-bulk', async (_event, uids: number[]) => {
+  if (!uids || uids.length === 0) return { success: true, archived: 0 };
+  const s = loadSettings();
+  if (!s.emailAccounts || s.emailAccounts.length === 0) return { error: 'No email accounts configured.' };
+  const account = s.emailAccounts[0];
+
+  const { ImapFlow } = require('imapflow');
+  const client = new ImapFlow({
+    host: account.imap.host,
+    port: account.imap.port,
+    secure: account.imap.security === 'tls',
+    auth: { user: account.imap.username, pass: account.imap.password },
+    logger: false,
+    tls: account.imap.security === 'starttls' ? { rejectUnauthorized: false } : undefined,
+  });
+
+  try {
+    await client.connect();
+    const lock = await client.getMailboxLock('INBOX');
+    try {
+      const mailboxes = await client.list();
+      const archiveNames = ['Archive', '[Gmail]/All Mail', 'Archives', 'ARCHIVE'];
+      let archiveFolder: string | null = null;
+      for (const name of archiveNames) {
+        if (mailboxes.some((mb: { path: string }) => mb.path === name)) {
+          archiveFolder = name;
+          break;
+        }
+      }
+      if (!archiveFolder) {
+        try {
+          await client.mailboxCreate('Archive');
+          archiveFolder = 'Archive';
+        } catch {
+          return { error: 'No archive folder found and could not create one.' };
+        }
+      }
+      const uidSet = uids.join(',');
+      await client.messageMove(uidSet, archiveFolder, { uid: true });
+      return { success: true, archived: uids.length };
+    } finally {
+      lock.release();
+    }
+  } catch (err: unknown) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    try { await client.logout(); } catch { /* ignore */ }
+  }
+});
+
 ipcMain.handle('read-discord', async (_event, opts?: { channelId?: string; limit?: number; before?: string }) => {
   const s = loadSettings();
   const token = s.discordBotToken?.trim();
@@ -654,10 +753,20 @@ ipcMain.handle('read-discord', async (_event, opts?: { channelId?: string; limit
       return { error: `Discord API returned ${res.status} ${res.statusText}${body ? ': ' + body : ''}` };
     }
     const messages = await res.json();
-    const formatted = messages.map((m: { id: string; author: { username: string }; content: string; timestamp: string; attachments?: { url: string }[] }) => ({
+    const userMap = new Map<string, string>();
+    for (const m of messages) {
+      if (m.author?.id) userMap.set(m.author.id, m.author.username);
+      if (m.mentions) for (const u of m.mentions) { if (u.id) userMap.set(u.id, u.username); }
+    }
+    saveDiscordUsers(userMap).catch(() => {});
+    const resolveMentions = (text: string) => text.replace(/<@!?(\d+)>/g, (_, id) => {
+      const name = userMap.get(id);
+      return name ? `@${name}` : `@unknown(${id})`;
+    });
+    const formatted = messages.map((m: { id: string; author: { username: string }; content: string; timestamp: string; attachments?: { url: string }[]; mentions?: { id: string; username: string }[] }) => ({
       id: m.id,
       author: m.author.username,
-      content: m.content || '(no text)',
+      content: resolveMentions(m.content || '(no text)'),
       time: m.timestamp,
       attachments: m.attachments?.length || 0,
     }));
@@ -746,8 +855,12 @@ async function startImapIdle() {
           if (messages.length > 0) {
             for (const msg of messages) {
               const time = msg.date ? new Date(msg.date).getTime() : Date.now();
-              db.run(`INSERT OR REPLACE INTO messages (id, source, time, email_subject, email_from, email_preview, email_seq, email_uid, discord_author, discord_content, discord_attachments, date_str)
-                VALUES (?, 'email', ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?)`,
+              db.run(`INSERT INTO messages (id, source, time, email_subject, email_from, email_preview, email_seq, email_uid, date_str, status)
+                VALUES (?, 'email', ?, ?, ?, ?, ?, ?, ?, 'UNREAD')
+                ON CONFLICT(id) DO UPDATE SET
+                  time=excluded.time, email_subject=excluded.email_subject, email_from=excluded.email_from,
+                  email_preview=excluded.email_preview, email_seq=excluded.email_seq, email_uid=excluded.email_uid,
+                  date_str=excluded.date_str`,
                 [`email:${msg.uid}`, time, msg.subject, msg.from, msg.preview, msg.seq, msg.uid, msg.date]);
             }
             scheduleDbSave();
@@ -785,8 +898,12 @@ async function startImapIdle() {
           const db = await getMessagesDb();
           for (const msg of messages) {
             const time = msg.date ? new Date(msg.date).getTime() : Date.now();
-            db.run(`INSERT OR REPLACE INTO messages (id, source, time, email_subject, email_from, email_preview, email_seq, email_uid, discord_author, discord_content, discord_attachments, date_str)
-              VALUES (?, 'email', ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?)`,
+            db.run(`INSERT INTO messages (id, source, time, email_subject, email_from, email_preview, email_seq, email_uid, date_str, status)
+              VALUES (?, 'email', ?, ?, ?, ?, ?, ?, ?, 'UNREAD')
+              ON CONFLICT(id) DO UPDATE SET
+                time=excluded.time, email_subject=excluded.email_subject, email_from=excluded.email_from,
+                email_preview=excluded.email_preview, email_seq=excluded.email_seq, email_uid=excluded.email_uid,
+                date_str=excluded.date_str`,
               [`email:${msg.uid}`, time, msg.subject, msg.from, msg.preview, msg.seq, msg.uid, msg.date]);
           }
           scheduleDbSave();
@@ -823,6 +940,13 @@ async function startImapIdle() {
       } catch { /* reconciliation failed */ }
     });
 
+    // Handle connection errors — suppress crash dialog and reconnect
+    client.on('error', (err: any) => {
+      console.error('IMAP IDLE error:', err?.code || err?.message || err);
+      imapIdleClient = null;
+      imapIdleReconnectTimer = setTimeout(startImapIdle, 10000);
+    });
+
     // Handle connection close — reconnect
     client.on('close', () => {
       imapIdleClient = null;
@@ -848,6 +972,16 @@ function stopImapIdle() {
 let discordPollTimer: ReturnType<typeof setTimeout> | null = null;
 let discordLatestId: string | null = null;
 
+async function initDiscordLatestId() {
+  try {
+    const db = await getMessagesDb();
+    const row = dbGet(db, "SELECT id FROM messages WHERE source = 'discord' ORDER BY time DESC LIMIT 1", []);
+    if (row?.id) {
+      discordLatestId = row.id.replace('discord:', '');
+    }
+  } catch {}
+}
+
 async function pollDiscord() {
   const s = loadSettings();
   const token = s.discordBotToken?.trim();
@@ -861,12 +995,22 @@ async function pollDiscord() {
       const res = await fetch(url, { headers: { Authorization: `Bot ${token}` } });
       if (!res.ok) continue;
       const messages = await res.json();
+      const userMap = new Map<string, string>();
+      for (const m of messages) {
+        if (m.author?.id) userMap.set(m.author.id, m.author.username);
+        if (m.mentions) for (const u of m.mentions) { if (u.id) userMap.set(u.id, u.username); }
+      }
+      saveDiscordUsers(userMap).catch(() => {});
+      const resolveMentions = (text: string) => text.replace(/<@!?(\d+)>/g, (_, id: string) => {
+        const name = userMap.get(id);
+        return name ? `@${name}` : `@unknown(${id})`;
+      });
       const formatted = messages
         .filter((m: { id: string }) => !discordLatestId || m.id > discordLatestId)
         .map((m: { id: string; author: { username: string }; content: string; timestamp: string; attachments?: { url: string }[] }) => ({
           id: m.id,
           author: m.author.username,
-          content: m.content || '(no text)',
+          content: resolveMentions(m.content || '(no text)'),
           time: m.timestamp,
           attachments: m.attachments?.length || 0,
         }));
@@ -875,12 +1019,16 @@ async function pollDiscord() {
         // Update latest ID
         const maxId = messages.reduce((max: string, m: { id: string }) => m.id > max ? m.id : max, discordLatestId || '0');
         discordLatestId = maxId;
-        // Cache in DB
+        // Cache in DB (preserve status and workspace_num)
         const db = await getMessagesDb();
         for (const msg of formatted) {
           const time = msg.time ? new Date(msg.time).getTime() : Date.now();
-          db.run(`INSERT OR REPLACE INTO messages (id, source, time, email_subject, email_from, email_preview, email_seq, email_uid, discord_author, discord_content, discord_attachments, date_str)
-            VALUES (?, 'discord', ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?)`,
+          db.run(`INSERT INTO messages (id, source, time, discord_author, discord_content, discord_attachments, date_str, status)
+            VALUES (?, 'discord', ?, ?, ?, ?, ?, 'UNREAD')
+            ON CONFLICT(id) DO UPDATE SET
+              time=excluded.time, discord_author=excluded.discord_author,
+              discord_content=excluded.discord_content, discord_attachments=excluded.discord_attachments,
+              date_str=excluded.date_str`,
             [`discord:${msg.id}`, time, msg.author, msg.content, msg.attachments, msg.time]);
         }
         scheduleDbSave();
@@ -895,8 +1043,10 @@ async function pollDiscord() {
 
 function startDiscordPolling() {
   stopDiscordPolling();
-  pollDiscord();
-  discordPollTimer = setInterval(pollDiscord, 60000);
+  initDiscordLatestId().then(() => {
+    pollDiscord();
+    discordPollTimer = setInterval(pollDiscord, 60000);
+  });
 }
 
 function stopDiscordPolling() {
@@ -939,9 +1089,17 @@ function dbGet(db: any, sql: string, params: any[] = []): any | null {
 ipcMain.handle('db-upsert-messages', async (_event, messages: any[]) => {
   const db = await getMessagesDb();
   for (const msg of messages) {
-    db.run(`INSERT OR REPLACE INTO messages (id, source, time, email_subject, email_from, email_preview, email_seq, email_uid, discord_author, discord_content, discord_attachments, date_str)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [msg.id, msg.source, msg.time, msg.email_subject, msg.email_from, msg.email_preview, msg.email_seq, msg.email_uid, msg.discord_author, msg.discord_content, msg.discord_attachments, msg.date_str]);
+    const messageId = msg.message_id || uuidv4();
+    db.run(`INSERT INTO messages (id, source, time, email_subject, email_from, email_preview, email_seq, email_uid, discord_author, discord_content, discord_attachments, date_str, status, message_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'UNREAD', ?)
+      ON CONFLICT(id) DO UPDATE SET
+        source=excluded.source, time=excluded.time, email_subject=excluded.email_subject,
+        email_from=excluded.email_from, email_preview=excluded.email_preview,
+        email_seq=excluded.email_seq, email_uid=excluded.email_uid,
+        discord_author=excluded.discord_author, discord_content=excluded.discord_content,
+        discord_attachments=excluded.discord_attachments, date_str=excluded.date_str,
+        message_id=COALESCE(messages.message_id, excluded.message_id)`,
+      [msg.id, msg.source, msg.time, msg.email_subject, msg.email_from, msg.email_preview, msg.email_seq, msg.email_uid, msg.discord_author, msg.discord_content, msg.discord_attachments, msg.date_str, messageId]);
   }
   scheduleDbSave();
   return { success: true };
@@ -958,7 +1116,30 @@ ipcMain.handle('db-get-messages', async (_event, opts?: { source?: string; befor
   if (conditions.length > 0) query += ' WHERE ' + conditions.join(' AND ');
   query += ' ORDER BY time DESC LIMIT ?';
   params.push(limit);
-  return dbAll(db, query, params);
+  const rows = dbAll(db, query, params);
+  // Resolve Discord mentions — fetch unknown users from API
+  for (const row of rows) {
+    if (row.source === 'discord' && row.discord_content && /<@!?\d+>/.test(row.discord_content)) {
+      row.discord_content = await resolveDiscordMentions(row.discord_content);
+    }
+  }
+  return rows;
+});
+
+ipcMain.handle('db-get-messages-by-ids', async (_event, messageIds: string[]) => {
+  if (!messageIds.length) return [];
+  const db = await getMessagesDb();
+  const placeholders = messageIds.map(() => '?').join(',');
+  return dbAll(db, `SELECT * FROM messages WHERE message_id IN (${placeholders})`, messageIds);
+});
+
+ipcMain.handle('db-delete-messages', async (_event, ids: string[]) => {
+  if (!ids.length) return { success: true };
+  const db = await getMessagesDb();
+  const placeholders = ids.map(() => '?').join(',');
+  db.run(`DELETE FROM messages WHERE id IN (${placeholders})`, ids);
+  scheduleDbSave();
+  return { success: true };
 });
 
 ipcMain.handle('db-get-email-body', async (_event, uid: number) => {
@@ -978,14 +1159,15 @@ ipcMain.handle('db-save-email-body', async (_event, body: { uid: number; subject
 ipcMain.handle('db-create-custom-message', async (_event, msg: { subject: string; sender: string; body: string }) => {
   const db = await getMessagesDb();
   const id = `custom:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const messageId = uuidv4();
   const time = Date.now();
   db.run('INSERT INTO custom_messages (id, time, subject, sender, body) VALUES (?, ?, ?, ?, ?)',
     [id, time, msg.subject, msg.sender, msg.body]);
-  db.run(`INSERT INTO messages (id, source, time, email_subject, email_from, email_preview, email_seq, email_uid, discord_author, discord_content, discord_attachments, date_str)
-    VALUES (?, 'custom', ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, ?)`,
-    [id, time, msg.subject, msg.sender, msg.body.slice(0, 200), new Date(time).toISOString()]);
+  db.run(`INSERT INTO messages (id, source, time, email_subject, email_from, email_preview, email_seq, email_uid, discord_author, discord_content, discord_attachments, date_str, message_id)
+    VALUES (?, 'custom', ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, ?, ?)`,
+    [id, time, msg.subject, msg.sender, msg.body.slice(0, 200), new Date(time).toISOString(), messageId]);
   scheduleDbSave();
-  return { id, time };
+  return { id, messageId, time };
 });
 
 ipcMain.handle('db-get-custom-message', async (_event, id: string) => {
@@ -994,7 +1176,8 @@ ipcMain.handle('db-get-custom-message', async (_event, id: string) => {
 });
 
 ipcMain.handle('db-save-cursors', (_event, cursors: any) => {
-  saveCursors(cursors);
+  const existing = loadCursors();
+  saveCursors({ ...existing, ...cursors });
   return { success: true };
 });
 
@@ -1476,9 +1659,19 @@ function buildCustomTools(settings: Settings): CustomToolDef[] {
           });
           if (!res.ok) return `Error: Discord API returned ${res.status} ${res.statusText}`;
           const messages = await res.json();
+          const userMap = new Map<string, string>();
+          for (const m of messages) {
+            if (m.author?.id) userMap.set(m.author.id, m.author.username);
+            if (m.mentions) for (const u of m.mentions) { if (u.id) userMap.set(u.id, u.username); }
+          }
+          saveDiscordUsers(userMap).catch(() => {});
+          const resolveMentions = (text: string) => text.replace(/<@!?(\d+)>/g, (_: string, id: string) => {
+            const name = userMap.get(id);
+            return name ? `@${name}` : `@unknown(${id})`;
+          });
           const formatted = messages.map((m: { author: { username: string }; content: string; timestamp: string; attachments?: { url: string }[] }) => ({
             author: m.author.username,
-            content: m.content || '(no text)',
+            content: resolveMentions(m.content || '(no text)'),
             time: m.timestamp,
             attachments: m.attachments?.length || 0,
           }));
@@ -1543,6 +1736,43 @@ function buildCustomTools(settings: Settings): CustomToolDef[] {
         }
       },
     },
+    {
+      ...rememberToolSpec,
+      inputSchema: z.object({
+        mode: z.enum(['append', 'edit']),
+        content: z.string(),
+        lineNumbers: z.array(z.number()),
+      }),
+      execute: async ({ mode, content, lineNumbers }, { settings: s }) => {
+        const currentMemories = s.memories || '';
+        const lines = currentMemories ? currentMemories.split('\n') : [];
+
+        if (mode === 'append') {
+          lines.push(...content.split('\n'));
+        } else if (mode === 'edit' && lineNumbers && lineNumbers.length > 0) {
+          const newLines = content.split('\n');
+          // Sort line numbers descending to avoid index shifting
+          const sorted = [...lineNumbers].sort((a, b) => b - a);
+          for (const ln of sorted) {
+            if (ln >= 1 && ln <= lines.length) {
+              lines.splice(ln - 1, 1);
+            }
+          }
+          // Insert new content at the position of the first (smallest) line number
+          const insertAt = Math.min(...lineNumbers) - 1;
+          lines.splice(Math.max(0, insertAt), 0, ...newLines);
+        }
+
+        const updated = lines.join('\n');
+        const current = loadSettings();
+        saveSettings({ ...current, memories: updated });
+        // Notify renderer of settings change
+        for (const win of BrowserWindow.getAllWindows()) {
+          win.webContents.send('settings-changed');
+        }
+        return `Memory updated. Current memories:\n${updated}`;
+      },
+    },
   ];
 }
 
@@ -1579,8 +1809,50 @@ ipcMain.on('chat-send-stream', async (event, requestId: string, messages: ChatMe
   });
   const MAX_TOOL_ROUNDS = 10;
   const MAX_RETRIES = 3;
-  const conversationMessages = [...messages];
+  const conversationMessages: ChatMessage[] = [];
+  // Inject self prompt and memories as system context
+  const memoryParts: string[] = [];
+  if (settings.selfPrompt) memoryParts.push(`## About the user\n${settings.selfPrompt}`);
+  if (settings.memories) memoryParts.push(`## Memories\n${settings.memories}`);
+  if (memoryParts.length > 0) {
+    conversationMessages.push({ role: 'system', content: memoryParts.join('\n\n') });
+  }
+  conversationMessages.push(...messages);
   let toolCallCounter = 0;
+
+  // Force a search tool call on the first message in a conversation
+  const userMessages = messages.filter(m => m.role === 'user');
+  const assistantMessages = messages.filter(m => m.role === 'assistant');
+  if (userMessages.length === 1 && assistantMessages.length === 0 && toolMap['search']) {
+    const userText = typeof userMessages[0].content === 'string'
+      ? userMessages[0].content
+      : Array.isArray(userMessages[0].content)
+        ? userMessages[0].content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join(' ')
+        : '';
+    if (userText.trim()) {
+      const tcId = `tc-${toolCallCounter++}`;
+      event.sender.send('chat-stream-tool-call', requestId, {
+        toolCallId: tcId, toolName: 'search', toolArgs: { query: userText.trim() }, status: 'running',
+      });
+      try {
+        const result = await toolMap['search'].execute({ query: userText.trim() }, {
+          messages: conversationMessages, settings, abortSignal: abortController.signal,
+        });
+        event.sender.send('chat-stream-tool-call', requestId, {
+          toolCallId: tcId, toolName: 'search', toolArgs: { query: userText.trim() }, result, status: 'done',
+        });
+        conversationMessages.push(
+          { role: 'assistant', content: JSON.stringify({ outputType: 'toolCalls', output: null, toolCalls: [{ name: 'search', input: { query: userText.trim() } }] }) },
+          { role: 'user', content: JSON.stringify({ toolResults: [{ tool: 'search', result }] }) },
+        );
+      } catch (err: any) {
+        const errMsg = err?.message || String(err);
+        event.sender.send('chat-stream-tool-call', requestId, {
+          toolCallId: tcId, toolName: 'search', toolArgs: { query: userText.trim() }, result: errMsg, status: 'error',
+        });
+      }
+    }
+  }
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     if (abortController.signal.aborted) {
@@ -1832,6 +2104,233 @@ ipcMain.handle('chat-generate-title', async (_event, userMessage: string) => {
   }
 });
 
+// Summarize the full inbox into a structured digest
+ipcMain.handle('summarize-inbox', async (_event, rawSummary: string) => {
+  const settings = loadSettings();
+  const apiKey = settings.openaiKey;
+  if (!apiKey) return null;
+  try {
+    const openai = createOpenAI({ apiKey });
+    let userContext = '';
+    if (settings.selfPrompt) userContext += `About the user: ${settings.selfPrompt}\n`;
+    if (settings.memories) userContext += `Memories: ${settings.memories}\n`;
+
+    const result = await generateText({
+      model: openai.chat('gpt-5.4'),
+      system: `You are an executive assistant. Distill the user's inbox into a structured context briefing that explains what's currently going on.
+${userContext}
+Output a concise structured overview in this format:
+
+# What's Going On
+A paragraph explaining the current situation — what projects are active, what conversations are happening, what's the general state of things. This should give someone who's never seen these messages enough context to understand any individual message.
+
+## Active Threads & Conversations
+- Ongoing discussions with who's involved and what they're about. Include current status of each.
+
+## Key People
+- Who's been communicating and their role/relationship to the user
+
+## Important Context
+- Deadlines, dates, numbers, decisions, or details that would be needed to understand future messages
+
+This is NOT a todo list. Focus on providing context and situational awareness, not action items. Use names, dates, and specifics. Skip spam/noise entirely.`,
+      prompt: rawSummary,
+      maxOutputTokens: 2000,
+    });
+    return result.text?.trim() || null;
+  } catch (err) {
+    console.error('Inbox summarize error:', err);
+    return null;
+  }
+});
+
+// Build the messageSummary that the categorization model sees
+async function buildMessageSummary(message: { source: string; subject?: string; from?: string; preview?: string; content?: string; author?: string; time?: number; uid?: number }): Promise<string> {
+  if (message.source === 'email') {
+    let emailBody = message.preview || '';
+    if (message.uid) {
+      try {
+        const db = await getMessagesDb();
+        const row = dbGet(db, 'SELECT body FROM email_bodies WHERE uid = ?', [message.uid]);
+        if (row?.body) emailBody = row.body;
+      } catch { /* fall back to preview */ }
+    }
+    return `Email from: ${message.from}\nSubject: ${message.subject}\nBody:\n${emailBody}`;
+  } else if (message.source === 'discord') {
+    let contextStr = '';
+    try {
+      const db = await getMessagesDb();
+      const msgTime = message.time || 0;
+      const before = dbAll(db,
+        "SELECT discord_author, discord_content, time FROM messages WHERE source = 'discord' AND time < ? ORDER BY time DESC LIMIT 50",
+        [msgTime]
+      ).reverse();
+      const after = dbAll(db,
+        "SELECT discord_author, discord_content, time FROM messages WHERE source = 'discord' AND time > ? ORDER BY time ASC LIMIT 50",
+        [msgTime]
+      );
+      const contextLines: string[] = [];
+      for (const m of before) contextLines.push(`${m.discord_author}: ${await resolveDiscordMentions(m.discord_content || '')}`);
+      contextLines.push(`>>> ${message.author}: ${await resolveDiscordMentions(message.content || '')} <<<  [THIS IS THE MESSAGE TO CLASSIFY]`);
+      for (const m of after) contextLines.push(`${m.discord_author}: ${await resolveDiscordMentions(m.discord_content || '')}`);
+      contextStr = contextLines.join('\n');
+    } catch { /* ignore */ }
+    if (contextStr) {
+      return `Discord conversation context (the message to classify is marked with >>>):\n\n${contextStr}`;
+    }
+    return `Discord message from ${message.author}: ${message.content}`;
+  }
+  return `Message from ${message.from}: ${message.subject}\n${message.preview}`;
+}
+
+// Preview the exact prompt the model sees for a message
+type CategorizeInput = { source: string; subject?: string; from?: string; preview?: string; content?: string; author?: string; time?: number; uid?: number; existingWorkspaces?: string[]; globalContext?: string };
+
+async function buildCategorizePrompts(message: CategorizeInput): Promise<{ system: string; user: string }> {
+  const settings = loadSettings();
+
+  let userContext = '';
+  if (settings.selfPrompt) userContext += `\n\nAbout the user: ${settings.selfPrompt}`;
+  if (settings.memories) userContext += `\n\nMemories about the user:\n${settings.memories}`;
+
+  const messageSummary = await buildMessageSummary(message);
+
+  const rawBodyLength = message.source === 'email'
+    ? (message.preview || '').length
+    : (message.content || '').length;
+  const needsSummary = rawBodyLength > 150;
+
+  const system = `You categorize messages for a specific user. Your job is to decide if the message requires action FROM THIS USER and nobody else.
+${userContext}
+
+RULES:
+1. A message is TODO ONLY if it explicitly mentions, tags, or addresses the user by name/username, OR is clearly their personal responsibility (e.g., sent directly to their email).
+2. Conversations between OTHER people are ALWAYS DONE — even if the topic is relevant. If person A asks person B to do something, that is NOT the user's TODO.
+3. Group chat messages not directed at the user are DONE.
+4. Automated notifications, newsletters, CI/CD, build logs = SPAM.
+5. For Discord: look at who is talking to whom. If the message is part of a conversation between other people, it is DONE regardless of topic.
+6. If the user has been asked a question, requested to do something, or received a message that expects a reply — and the user has NOT yet responded (check the messages after it) — mark it as TODO.
+7. For emails: any non-spam email sent TO the user that asks a question, requests action, or expects a reply should be TODO unless the email body itself shows a prior reply from the user (e.g. quoted reply text). If it's purely informational with no action needed, mark DONE.
+
+Respond with JSON:
+- "status": "SPAM" | "TODO" | "DONE"${needsSummary ? `
+- "summary": REQUIRED. Write like you're taking notes in a meeting for your boss — only the important facts, decisions, requests, deadlines, names, and numbers. Skip greetings, filler, and pleasantries. Can be more than two sentences if the message contains key details (dates, amounts, action items, specific requirements).` : ''}
+- "matchedWorkspaces": (only if TODO and it matches existing workspaces) array of workspace numbers, e.g. [29, 34]
+- "todos": (only if TODO and no matchedWorkspaces) array of objects with:
+  - "taskName": max 5 words
+  - "notes": paragraph explaining the task, written as instructions TO the user (use "you" — e.g. "You need to create a spreadsheet..." not "The user should..."). If context is missing, say so first.
+
+Only create MULTIPLE todos for truly parallel tasks. Sequential steps = one todo.
+
+For Discord, surrounding conversation context may be provided. The message to classify is marked with >>>. Use the context to see who is being addressed and whether it's already resolved. If someone asks the user a question and the user has NOT replied in the messages after it, mark it as TODO — the user needs to respond.
+${message.existingWorkspaces && message.existingWorkspaces.length > 0 ? `
+The user already has these open workspaces/tasks:
+${message.existingWorkspaces.map(n => `- ${n}`).join('\n')}
+If a message relates to an existing workspace, still mark it as TODO but include "matchedWorkspaces" with the workspace numbers (e.g. [29, 34]) — do NOT create new todos for it. Only create new todos if the task is genuinely new and not covered by any existing workspace.` : ''}
+Respond ONLY with valid JSON, no markdown.`;
+
+  const user = `${messageSummary}${message.globalContext ? `\n\n--- GLOBAL CONTEXT: Summary of all messages in the inbox ---\n${message.globalContext}` : ''}`;
+
+  return { system, user };
+}
+
+ipcMain.handle('preview-sync-payload', async (_event, message: CategorizeInput) => {
+  try {
+    const { system, user } = await buildCategorizePrompts(message);
+    return `=== SYSTEM PROMPT ===\n\n${system}\n\n=== USER PROMPT ===\n\n${user}`;
+  } catch (err) {
+    return `Error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+});
+
+// Categorize a message using LLM
+ipcMain.handle('categorize-message', async (_event, message: CategorizeInput & { id: string }) => {
+  const settings = loadSettings();
+  const apiKey = settings.openaiKey;
+  if (!apiKey) return null;
+  try {
+    const openai = createOpenAI({ apiKey });
+    const { system, user } = await buildCategorizePrompts(message);
+
+    const result = await generateText({
+      model: openai.chat('gpt-5.4'),
+      system,
+      prompt: user,
+      maxOutputTokens: 500,
+    });
+    return JSON.parse(result.text?.trim() || 'null');
+  } catch (err) {
+    console.error('Categorize error:', err);
+    return null;
+  }
+});
+
+// Update message status in DB
+ipcMain.handle('db-update-message-status', async (_event, id: string, status: string, workspaceNums?: number[], summary?: string) => {
+  const db = await getMessagesDb();
+  const wsValue = workspaceNums && workspaceNums.length > 0 ? workspaceNums.join(',') : null;
+  db.run('UPDATE messages SET status = ?, workspace_num = ?, summary = ? WHERE id = ?', [status, wsValue, summary || null, id]);
+  scheduleDbSave();
+  return { success: true };
+});
+
+// Reset all message statuses to UNREAD
+ipcMain.handle('db-reset-all-statuses', async () => {
+  const db = await getMessagesDb();
+  db.run("UPDATE messages SET status = 'UNREAD', workspace_num = NULL, summary = NULL");
+  scheduleDbSave();
+  return { success: true };
+});
+
+// Get next workspace number and increment
+ipcMain.handle('get-next-workspace-num', async () => {
+  const cursors = loadCursors();
+  const num = cursors.nextWorkspaceNum || 1;
+  saveCursors({ ...cursors, nextWorkspaceNum: num + 1 });
+  return num;
+});
+
+// Notes persistence
+ipcMain.handle('save-note-content', (_event, tabId: number, content: string) => {
+  fs.mkdirSync(notesDir, { recursive: true });
+  fs.writeFileSync(path.join(notesDir, `${tabId}.md`), content, 'utf-8');
+  return { success: true };
+});
+
+ipcMain.handle('load-note-content', (_event, tabId: number) => {
+  try {
+    return fs.readFileSync(path.join(notesDir, `${tabId}.md`), 'utf-8');
+  } catch {
+    return '';
+  }
+});
+
+// Catch ALL new webContents (including popup windows from webviews)
+app.on('web-contents-created', (_event, contents) => {
+  contents.setWindowOpenHandler(({ url, disposition }) => {
+    // Skip internal Google widget URLs
+    try {
+      const parsed = new URL(url);
+      if (parsed.hostname.match(/^(ogs|contacts|people-pa|lh3|accounts)\.google\.com$/) && (url.includes('widget') || url.includes('gapi') || url.includes('hovercard'))) {
+        return { action: 'deny' };
+      }
+    } catch {}
+    // Allow OAuth popups (about:blank)
+    if (disposition === 'new-window' && (!url || url === 'about:blank')) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 500, height: 700, autoHideMenuBar: true,
+          webPreferences: { nodeIntegration: false, contextIsolation: true },
+        },
+      };
+    }
+    // Everything else → new tab
+    mainWindow?.webContents.send('open-url-in-new-tab', url);
+    return { action: 'deny' };
+  });
+});
+
 app.whenReady().then(() => {
   applyTheme(loadSettings().theme);
 
@@ -1852,9 +2351,32 @@ app.whenReady().then(() => {
         { role: 'quit' },
       ],
     },
-    { role: 'fileMenu' },
+    {
+      label: 'File',
+      submenu: [
+        { label: 'New Tab', accelerator: 'CmdOrCtrl+T', click: () => mainWindow?.webContents.send('shortcut-from-webview', 't', false) },
+        { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => mainWindow?.webContents.send('shortcut-from-webview', 'w', false) },
+        { type: 'separator' },
+        { role: 'close' },
+      ],
+    },
     { role: 'editMenu' },
-    { role: 'viewMenu' },
+    {
+      label: 'View',
+      submenu: [
+        { label: 'Find…', accelerator: 'CmdOrCtrl+F', click: () => mainWindow?.webContents.send('shortcut-from-webview', 'f', false) },
+        { type: 'separator' },
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
     { role: 'windowMenu' },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));

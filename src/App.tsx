@@ -6,6 +6,8 @@ import { WebviewContainer, WebviewContainerHandle, TabInfo } from './components/
 import { ChatView, DisplayMessage } from './components/ChatView';
 import { DownloadBar, DownloadItem } from './components/DownloadBar';
 import { MessagesView } from './components/MessagesView';
+import { NotesView } from './components/NotesView';
+import { HistoryView } from './components/HistoryView';
 import { FindBar } from './components/FindBar';
 
 function playNotificationTone() {
@@ -62,18 +64,23 @@ interface AppState {
 type ChatHistories = Record<number, DisplayMessage[]>;
 
 type AppAction =
-  | { type: 'CREATE_WORKSPACE'; url?: string }
+  | { type: 'CREATE_WORKSPACE'; url?: string; name?: string; extraTabs?: Array<{ type: TabInfo['type']; title: string }>; background?: boolean; notesOnly?: boolean }
   | { type: 'CLOSE_WORKSPACE'; workspaceId: number }
   | { type: 'SWITCH_WORKSPACE'; workspaceId: number }
   | { type: 'REORDER_WORKSPACES'; workspaces: Workspace[] }
-  | { type: 'CREATE_TAB'; workspaceId?: number; url?: string; tabType?: 'messages' }
+  | { type: 'CREATE_TAB'; workspaceId?: number; url?: string; tabType?: 'messages' | 'notes' | 'history' }
   | { type: 'CLOSE_TAB'; tabId: number }
   | { type: 'SWITCH_TAB'; tabId: number }
   | { type: 'UPDATE_TAB'; tabId: number; title?: string; url?: string }
   | { type: 'CONVERT_TAB'; tabId: number; url: string }
   | { type: 'DUPLICATE_TAB'; tabId: number }
+  | { type: 'REORDER_TABS'; workspaceId: number; tabs: TabInfo[] }
+  | { type: 'MOVE_TAB_TO_WORKSPACE'; tabId: number; targetWorkspaceId: number }
   | { type: 'RENAME_WORKSPACE'; workspaceId: number; name: string }
-  | { type: 'RESTORE'; state: AppState };
+  | { type: 'RESTORE'; state: AppState }
+  | { type: 'ENSURE_MESSAGES_WORKSPACE' }
+  | { type: 'RESTORE_WORKSPACE'; workspaceId: number }
+  | { type: 'DELETE_WORKSPACE'; workspaceId: number };
 
 function findWorkspaceForTab(state: AppState, tabId: number): Workspace | undefined {
   return state.workspaces.find(w => w.tabs.some(t => t.id === tabId));
@@ -86,54 +93,54 @@ function updateWorkspace(state: AppState, wsId: number, updater: (ws: Workspace)
 function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
     case 'CREATE_WORKSPACE': {
-      const tabId = state.nextTabId;
+      let currentTabId = state.nextTabId;
       const wsId = state.nextWorkspaceId;
       const hasUrl = !!action.url;
-      const newTab: TabInfo = {
-        id: tabId,
-        title: hasUrl ? 'New Tab' : 'New Chat',
-        url: action.url || '',
-        type: hasUrl ? 'page' : 'chat',
-      };
+      const tabs: TabInfo[] = [];
+      if (!action.notesOnly) {
+        tabs.push({
+          id: currentTabId++,
+          title: hasUrl ? 'New Tab' : 'New Chat',
+          url: action.url || '',
+          type: hasUrl ? 'page' : 'chat',
+        });
+      }
+      if (action.extraTabs) {
+        for (const et of action.extraTabs) {
+          tabs.push({ id: currentTabId++, title: et.title, url: '', type: et.type });
+        }
+      }
       const newWs: Workspace = {
         id: wsId,
-        name: '',
-        tabs: [newTab],
-        activeTabId: tabId,
+        name: action.name || '',
+        tabs,
+        activeTabId: tabs[0].id,
       };
       return {
         workspaces: [...state.workspaces, newWs],
-        activeWorkspaceId: wsId,
+        activeWorkspaceId: action.background ? state.activeWorkspaceId : wsId,
         nextWorkspaceId: wsId + 1,
-        nextTabId: tabId + 1,
+        nextTabId: currentTabId,
       };
     }
 
     case 'CLOSE_WORKSPACE': {
       const idx = state.workspaces.findIndex(w => w.id === action.workspaceId);
       if (idx === -1) return state;
+      const closingWs = state.workspaces[idx];
+      // Prevent closing pinned workspaces (Messages, History)
+      if (closingWs.tabs.some(t => t.type === 'messages' || t.type === 'history')) return state;
 
-      if (state.workspaces.length === 1) {
-        // Last workspace — create a fresh one
-        const tabId = state.nextTabId;
-        const wsId = state.nextWorkspaceId;
-        const newTab: TabInfo = { id: tabId, title: 'New Chat', url: '', type: 'chat' };
-        const newWs: Workspace = { id: wsId, name: '', tabs: [newTab], activeTabId: tabId };
-        return {
-          workspaces: [newWs],
-          activeWorkspaceId: wsId,
-          nextWorkspaceId: wsId + 1,
-          nextTabId: tabId + 1,
-        };
-      }
-
-      const newWorkspaces = state.workspaces.filter(w => w.id !== action.workspaceId);
+      // Archive the workspace instead of removing it
+      const updated = state.workspaces.map(w => w.id === action.workspaceId ? { ...w, archived: true } : w);
+      const visible = updated.filter(w => !w.archived);
       let newActiveWsId = state.activeWorkspaceId;
       if (state.activeWorkspaceId === action.workspaceId) {
-        const newIdx = idx >= newWorkspaces.length ? newWorkspaces.length - 1 : idx;
-        newActiveWsId = newWorkspaces[newIdx].id;
+        // Switch to nearest visible workspace
+        const visibleIdx = Math.min(idx, visible.length - 1);
+        newActiveWsId = visible[Math.max(0, visibleIdx)]?.id ?? state.activeWorkspaceId;
       }
-      return { ...state, workspaces: newWorkspaces, activeWorkspaceId: newActiveWsId };
+      return { ...state, workspaces: updated, activeWorkspaceId: newActiveWsId };
     }
 
     case 'SWITCH_WORKSPACE': {
@@ -146,7 +153,12 @@ function appReducer(state: AppState, action: AppAction): AppState {
     }
 
     case 'REORDER_WORKSPACES': {
-      return { ...state, workspaces: action.workspaces };
+      // Keep Messages and History pinned at positions 0 and 1
+      const msgWs = action.workspaces.find(w => w.name === 'Messages' && w.tabs.some(t => t.type === 'messages'));
+      const histWs = action.workspaces.find(w => w.name === 'History' && w.tabs.some(t => t.type === 'history'));
+      const rest = action.workspaces.filter(w => w !== msgWs && w !== histWs);
+      const pinned = [msgWs, histWs].filter(Boolean) as Workspace[];
+      return { ...state, workspaces: [...pinned, ...rest] };
     }
 
     case 'CREATE_TAB': {
@@ -154,9 +166,9 @@ function appReducer(state: AppState, action: AppAction): AppState {
       const ws = state.workspaces.find(w => w.id === wsId);
       if (!ws) return state;
 
-      // For messages tab, switch to existing one if it exists
-      if (action.tabType === 'messages') {
-        const existing = ws.tabs.find(t => t.type === 'messages');
+      // For messages/notes tab, switch to existing one if it exists
+      if (action.tabType === 'messages' || action.tabType === 'notes') {
+        const existing = ws.tabs.find(t => t.type === action.tabType);
         if (existing) {
           return {
             ...updateWorkspace(state, wsId, w => ({ ...w, activeTabId: existing.id })),
@@ -171,6 +183,12 @@ function appReducer(state: AppState, action: AppAction): AppState {
       if (action.tabType === 'messages') {
         tabType = 'messages';
         title = 'Messages';
+      } else if (action.tabType === 'notes') {
+        tabType = 'notes';
+        title = 'Notes';
+      } else if (action.tabType === 'history') {
+        tabType = 'history';
+        title = 'History';
       } else if (action.url) {
         tabType = 'page';
         title = 'New Tab';
@@ -276,8 +294,91 @@ function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
 
+    case 'REORDER_TABS': {
+      return updateWorkspace(state, action.workspaceId, ws => ({ ...ws, tabs: action.tabs }));
+    }
+
+    case 'MOVE_TAB_TO_WORKSPACE': {
+      const srcWs = findWorkspaceForTab(state, action.tabId);
+      if (!srcWs || srcWs.id === action.targetWorkspaceId) return state;
+      const tab = srcWs.tabs.find(t => t.id === action.tabId);
+      if (!tab) return state;
+      const remainingTabs = srcWs.tabs.filter(t => t.id !== action.tabId);
+      if (remainingTabs.length === 0) return state; // don't leave workspace empty
+      let newState = updateWorkspace(state, srcWs.id, ws => ({
+        ...ws,
+        tabs: remainingTabs,
+        activeTabId: ws.activeTabId === action.tabId ? remainingTabs[0].id : ws.activeTabId,
+      }));
+      newState = updateWorkspace(newState, action.targetWorkspaceId, ws => ({
+        ...ws,
+        tabs: [...ws.tabs, tab],
+        activeTabId: tab.id,
+      }));
+      return { ...newState, activeWorkspaceId: action.targetWorkspaceId };
+    }
+
     case 'RESTORE': {
       return action.state;
+    }
+
+    case 'RESTORE_WORKSPACE': {
+      return {
+        ...state,
+        workspaces: state.workspaces.map(w => w.id === action.workspaceId ? { ...w, archived: false } : w),
+        activeWorkspaceId: action.workspaceId,
+      };
+    }
+
+    case 'DELETE_WORKSPACE': {
+      return { ...state, workspaces: state.workspaces.filter(w => w.id !== action.workspaceId) };
+    }
+
+    case 'ENSURE_MESSAGES_WORKSPACE': {
+      let result = state;
+      // Ensure Messages workspace exists at position 0
+      const existingMsg = result.workspaces.find(w => w.tabs.some(t => t.type === 'messages') && (w.name === 'Messages' || w.name === ''));
+      if (existingMsg) {
+        const idx = result.workspaces.indexOf(existingMsg);
+        if (idx !== 0) {
+          result = { ...result, workspaces: [existingMsg, ...result.workspaces.filter(w => w !== existingMsg)] };
+        }
+      } else {
+        const tabId = result.nextTabId;
+        const wsId = result.nextWorkspaceId;
+        const messagesTab: TabInfo = { id: tabId, title: 'Messages', url: '', type: 'messages' };
+        const messagesWs: Workspace = { id: wsId, name: 'Messages', tabs: [messagesTab], activeTabId: tabId };
+        result = {
+          workspaces: [messagesWs, ...result.workspaces],
+          activeWorkspaceId: result.activeWorkspaceId === -1 ? wsId : result.activeWorkspaceId,
+          nextWorkspaceId: wsId + 1,
+          nextTabId: tabId + 1,
+        };
+      }
+      // Ensure History workspace exists at position 1
+      const existingHist = result.workspaces.find(w => w.tabs.some(t => t.type === 'history') && w.name === 'History');
+      if (existingHist) {
+        const idx = result.workspaces.indexOf(existingHist);
+        if (idx !== 1) {
+          const without = result.workspaces.filter(w => w !== existingHist);
+          without.splice(1, 0, existingHist);
+          result = { ...result, workspaces: without };
+        }
+      } else {
+        const tabId = result.nextTabId;
+        const wsId = result.nextWorkspaceId;
+        const historyTab: TabInfo = { id: tabId, title: 'History', url: '', type: 'history' };
+        const historyWs: Workspace = { id: wsId, name: 'History', tabs: [historyTab], activeTabId: tabId };
+        const wsList = [...result.workspaces];
+        wsList.splice(1, 0, historyWs);
+        result = {
+          ...result,
+          workspaces: wsList,
+          nextWorkspaceId: wsId + 1,
+          nextTabId: tabId + 1,
+        };
+      }
+      return result;
     }
 
     default:
@@ -286,7 +387,7 @@ function appReducer(state: AppState, action: AppAction): AppState {
 }
 
 // Migrate old flat tab format to workspace format
-function migrateLoadedState(saved: any): { state: AppState; chatHistories: ChatHistories; favicons: Record<number, string> } | null {
+function migrateLoadedState(saved: any): { state: AppState; chatHistories: ChatHistories; favicons: Record<number, string>; tabMessageLinks: Record<number, string[]> } | null {
   if (!saved) return null;
 
   // New format
@@ -300,6 +401,7 @@ function migrateLoadedState(saved: any): { state: AppState; chatHistories: ChatH
       },
       chatHistories: saved.chatHistories || {},
       favicons: saved.favicons || {},
+      tabMessageLinks: saved.tabMessageLinks || {},
     };
   }
 
@@ -320,6 +422,7 @@ function migrateLoadedState(saved: any): { state: AppState; chatHistories: ChatH
       },
       chatHistories: saved.chatHistories || {},
       favicons: saved.favicons || {},
+      tabMessageLinks: {},
     };
   }
 
@@ -335,6 +438,7 @@ export default function App() {
   });
 
   const [tabSidebarOpen, setTabSidebarOpen] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = useState(200);
   const openSettings = useCallback(() => window.browser.openSettings(), []);
   const [font, setFont] = useState<'geist' | 'pt-serif'>('pt-serif');
   const [loadingTabs, setLoadingTabs] = useState<Record<number, boolean>>({});
@@ -348,6 +452,7 @@ export default function App() {
   const [unreadTabs, setUnreadTabs] = useState<Record<number, boolean>>({});
   const [initialQueries, setInitialQueries] = useState<Record<number, string>>({});
   const [visitHistory, setVisitHistory] = useState<{ url: string; title: string; visitCount: number; lastVisited: number }[]>([]);
+  const [tabMessageLinks, setTabMessageLinks] = useState<Record<number, string[]>>({});
 
   const webviewRef = useRef<WebviewContainerHandle>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
@@ -359,6 +464,24 @@ export default function App() {
 
   const activeTabIdRef = useRef(activeTab?.id ?? -1);
   activeTabIdRef.current = activeTab?.id ?? -1;
+
+  const nextTabIdRef = useRef(appState.nextTabId);
+  nextTabIdRef.current = appState.nextTabId;
+
+  const createWorkspaceWithPrompt = useCallback((name: string, _initialPrompt: string, notesContent?: string, messageIds?: string[]) => {
+    if (notesContent) {
+      const notesTabId = nextTabIdRef.current; // notes tab is the only tab
+      dispatch({ type: 'CREATE_WORKSPACE', name, extraTabs: [{ type: 'notes', title: 'Notes' }], background: true, notesOnly: true });
+      nextTabIdRef.current += 1; // notes only
+      window.browser.saveNoteContent(notesTabId, notesContent).catch(() => {});
+      if (messageIds?.length) {
+        setTabMessageLinks(prev => ({ ...prev, [notesTabId]: messageIds }));
+      }
+    } else {
+      dispatch({ type: 'CREATE_WORKSPACE', name, background: true });
+      nextTabIdRef.current += 1; // chat only
+    }
+  }, []);
 
   useEffect(() => {
     if (activeTab) {
@@ -380,9 +503,11 @@ export default function App() {
         dispatch({ type: 'RESTORE', state: migrated.state });
         setChatHistories(migrated.chatHistories);
         setFavicons(migrated.favicons);
+        setTabMessageLinks(migrated.tabMessageLinks);
       } else {
         dispatch({ type: 'CREATE_WORKSPACE' });
       }
+      dispatch({ type: 'ENSURE_MESSAGES_WORKSPACE' });
       const savedHistory = await window.browser.loadHistory();
       if (savedHistory?.length) setVisitHistory(savedHistory);
       const settings = await window.browser.getSettings();
@@ -410,9 +535,10 @@ export default function App() {
         nextTabId: appState.nextTabId,
         chatHistories,
         favicons,
+        tabMessageLinks,
       });
     }, 500);
-  }, [appState, chatHistories, favicons, initialized]);
+  }, [appState, chatHistories, favicons, tabMessageLinks, initialized]);
 
   const historySaveRef = useRef<ReturnType<typeof setTimeout>>();
   useEffect(() => {
@@ -738,15 +864,71 @@ export default function App() {
     }
   }, [activeTab?.type, activeTab?.id, chatHistories, appState.nextTabId]);
 
+  // Navigate to a workspace by its #N name prefix
+  const goToWorkspaceByNum = useCallback((num: number) => {
+    const ws = appState.workspaces.find(w => w.name.startsWith(`#${num}:`));
+    if (ws) {
+      dispatch({ type: 'SWITCH_WORKSPACE', workspaceId: ws.id });
+    }
+  }, [appState.workspaces]);
+
+  // Find which tab a messageId is linked to, and navigate to it
+  const goToLinkedTab = useCallback((messageId: string) => {
+    for (const [tabIdStr, msgIds] of Object.entries(tabMessageLinks)) {
+      if (msgIds.includes(messageId)) {
+        const tabId = parseInt(tabIdStr, 10);
+        const ws = appState.workspaces.find(w => w.tabs.some(t => t.id === tabId));
+        if (ws) {
+          if (ws.id !== appState.activeWorkspaceId) {
+            dispatch({ type: 'SWITCH_WORKSPACE', workspaceId: ws.id });
+          }
+          dispatch({ type: 'SWITCH_TAB', tabId });
+        }
+        return;
+      }
+    }
+  }, [tabMessageLinks, appState.workspaces, appState.activeWorkspaceId]);
+
+  // Find which tab a messageId is linked to (returns tabId or null)
+  const findLinkedTabId = useCallback((messageId: string): number | null => {
+    for (const [tabIdStr, msgIds] of Object.entries(tabMessageLinks)) {
+      if (msgIds.includes(messageId)) return parseInt(tabIdStr, 10);
+    }
+    return null;
+  }, [tabMessageLinks]);
+
+  // Navigate to the Messages workspace and select a message
+  const [pendingMessageSelect, setPendingMessageSelect] = useState<string | null>(null);
+  const goToMessage = useCallback((messageId: string) => {
+    const messagesWs = appState.workspaces.find(w => w.tabs.some(t => t.type === 'messages'));
+    if (messagesWs) {
+      dispatch({ type: 'SWITCH_WORKSPACE', workspaceId: messagesWs.id });
+      const messagesTab = messagesWs.tabs.find(t => t.type === 'messages');
+      if (messagesTab) dispatch({ type: 'SWITCH_TAB', tabId: messagesTab.id });
+    }
+    setPendingMessageSelect(messageId);
+  }, [appState.workspaces]);
+
+  // Link a message to the current notes tab
+  const linkMessageToTab = useCallback((messageId: string, tabId: number) => {
+    setTabMessageLinks(prev => {
+      const existing = prev[tabId] || [];
+      if (existing.includes(messageId)) return prev;
+      return { ...prev, [tabId]: [...existing, messageId] };
+    });
+  }, []);
+
   const isChat = activeTab?.type === 'chat';
   const isMessages = activeTab?.type === 'messages';
+  const isNotes = activeTab?.type === 'notes';
+  const isHistory = activeTab?.type === 'history';
   const isNonPage = activeTab?.type !== 'page';
 
   return (
     <div className="flex h-full w-full">
-      <div className={`shrink-0 overflow-hidden transition-[width] duration-200 ease-in-out ${tabSidebarOpen ? 'w-[200px]' : 'w-0'}`}>
+      <div className={`shrink-0 overflow-hidden ${tabSidebarOpen ? '' : 'w-0'}`} style={tabSidebarOpen ? { width: sidebarWidth } : undefined}>
       <WorkspaceSidebar
-        workspaces={appState.workspaces}
+        workspaces={appState.workspaces.filter(w => !w.archived)}
         activeWorkspaceId={appState.activeWorkspaceId}
         loadingTabs={loadingTabs}
         favicons={favicons}
@@ -758,13 +940,22 @@ export default function App() {
         onClose={handleCloseWorkspace}
         onRename={(wsId, name) => dispatch({ type: 'RENAME_WORKSPACE', workspaceId: wsId, name })}
         onCreate={() => dispatch({ type: 'CREATE_WORKSPACE' })}
-        onGenerateTodos={() => {
-          const newTabId = appState.nextTabId;
-          dispatch({ type: 'CREATE_WORKSPACE' });
-          setInitialQueries(prev => ({ ...prev, [newTabId]: 'say hi openai!' }));
-        }}
         onReorder={(workspaces) => dispatch({ type: 'REORDER_WORKSPACES', workspaces })}
         onOpenSettings={openSettings}
+        onResizeStart={(e) => {
+          e.preventDefault();
+          const startX = e.clientX;
+          const startWidth = sidebarWidth;
+          const onMove = (ev: MouseEvent) => {
+            setSidebarWidth(Math.max(200, Math.min(500, startWidth + ev.clientX - startX)));
+          };
+          const onUp = () => {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+          };
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+        }}
       />
       </div>
       <div className="flex-1 flex flex-col min-w-0 h-full bg-white dark:bg-[#111]">
@@ -784,6 +975,10 @@ export default function App() {
             onToggleTabSidebar={() => setTabSidebarOpen(prev => !prev)}
             tabSidebarOpen={tabSidebarOpen}
             onCreateTab={() => dispatch({ type: 'CREATE_TAB' })}
+            onReorderTabs={(tabs) => activeWorkspace && dispatch({ type: 'REORDER_TABS', workspaceId: activeWorkspace.id, tabs })}
+            onMoveTabToWorkspace={(tabId, targetWorkspaceId) => dispatch({ type: 'MOVE_TAB_TO_WORKSPACE', tabId, targetWorkspaceId })}
+            workspaces={appState.workspaces.filter(w => !w.archived)}
+            activeWorkspaceId={activeWorkspace?.id ?? 0}
           />
         )}
         {!(isNonPage && activeWorkspace && activeWorkspace.tabs.length >= 2) && (
@@ -798,7 +993,7 @@ export default function App() {
             onToggleTabSidebar={() => setTabSidebarOpen(prev => !prev)}
             tabSidebarOpen={tabSidebarOpen}
             onOpenSettings={openSettings}
-            isChatTab={isChat || isMessages}
+            isChatTab={isChat || isMessages || isNotes || isHistory}
             allTabs={allTabs}
             visitHistory={visitHistory}
             onCreateTab={() => dispatch({ type: 'CREATE_TAB' })}
@@ -830,11 +1025,45 @@ export default function App() {
               initialQuery={initialQueries[tab.id]}
               onInitialQueryConsumed={(tabId) => setInitialQueries(prev => { const next = { ...prev }; delete next[tabId]; return next; })}
               visitHistory={visitHistory}
-              onOpenSpecialTab={() => dispatch({ type: 'CREATE_TAB', tabType: 'messages' })}
+              onOpenSpecialTab={(tabType) => dispatch({ type: 'CREATE_TAB', tabType: tabType || 'messages' })}
             />
           ))}
           {allTabs.filter(t => t.type === 'messages').map(tab => (
-            <MessagesView key={tab.id} tabId={tab.id} hidden={tab.id !== activeTab?.id} />
+            <MessagesView
+              key={tab.id}
+              tabId={tab.id}
+              hidden={tab.id !== activeTab?.id}
+              onCreateWorkspace={createWorkspaceWithPrompt}
+              onOpenLink={(url) => dispatch({ type: 'CREATE_TAB', url })}
+              workspaceNames={appState.workspaces.filter(w => {
+                // Only include workspaces that have at least one linked message
+                return w.tabs.some(t => (tabMessageLinks[t.id] || []).length > 0);
+              }).map(w => w.name)}
+              onGoToLinkedTab={goToLinkedTab}
+              findLinkedTabId={findLinkedTabId}
+              onGoToWorkspaceByNum={goToWorkspaceByNum}
+              pendingMessageSelect={pendingMessageSelect}
+              onPendingMessageSelectHandled={() => setPendingMessageSelect(null)}
+            />
+          ))}
+          {allTabs.filter(t => t.type === 'notes').map(tab => (
+            <NotesView
+              key={tab.id}
+              tabId={tab.id}
+              hidden={tab.id !== activeTab?.id}
+              linkedMessageIds={tabMessageLinks[tab.id] || []}
+              onGoToMessage={goToMessage}
+            />
+          ))}
+          {allTabs.filter(t => t.type === 'history').map(tab => (
+            <HistoryView
+              key={tab.id}
+              tabId={tab.id}
+              hidden={tab.id !== activeTab?.id}
+              archivedWorkspaces={appState.workspaces.filter(w => w.archived)}
+              onRestore={(wsId) => dispatch({ type: 'RESTORE_WORKSPACE', workspaceId: wsId })}
+              onDelete={(wsId) => dispatch({ type: 'DELETE_WORKSPACE', workspaceId: wsId })}
+            />
           ))}
           <WebviewContainer
             ref={webviewRef}
@@ -843,6 +1072,7 @@ export default function App() {
             onTabUpdate={handleTabUpdate}
             onLoadingChange={handleLoadingChange}
             onFaviconChange={handleFaviconChange}
+            onNewTab={(url) => dispatch({ type: 'CREATE_TAB', url })}
             hidden={isNonPage}
           />
         </div>

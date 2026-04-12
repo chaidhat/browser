@@ -1,10 +1,14 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { FiRefreshCw, FiMail, FiMessageCircle, FiAlertCircle, FiInbox, FiX, FiChevronsRight } from 'react-icons/fi';
+import { FiRefreshCw, FiMail, FiMessageCircle, FiAlertCircle, FiInbox, FiX, FiChevronsRight, FiPlus } from 'react-icons/fi';
+
+const uuidv4 = () => crypto.randomUUID();
+
+type MessageStatus = 'UNREAD' | 'SPAM' | 'TODO' | 'DONE';
 
 type MessageItem =
-  | { source: 'email'; time: number; subject: string; from: string; date: string; preview: string; seq: number; uid: number }
-  | { source: 'discord'; time: number; author: string; content: string; dateStr: string; attachments: number; id: string }
-  | { source: 'custom'; time: number; subject: string; sender: string; body: string; id: string };
+  | { messageId: string; source: 'email'; time: number; subject: string; from: string; date: string; preview: string; seq: number; uid: number; status: MessageStatus; workspaceNums?: number[]; summary?: string }
+  | { messageId: string; source: 'discord'; time: number; author: string; content: string; dateStr: string; attachments: number; id: string; status: MessageStatus; workspaceNums?: number[]; summary?: string }
+  | { messageId: string; source: 'custom'; time: number; subject: string; sender: string; body: string; id: string; status: MessageStatus; workspaceNums?: number[]; summary?: string };
 
 type SelectedItem =
   | { source: 'email'; uid: number }
@@ -23,6 +27,14 @@ interface EmailDetail {
 interface Props {
   tabId: number;
   hidden?: boolean;
+  onCreateWorkspace?: (name: string, initialPrompt: string, notesContent?: string, messageIds?: string[]) => void;
+  onOpenLink?: (url: string) => void;
+  workspaceNames?: string[];
+  onGoToLinkedTab?: (messageId: string) => void;
+  findLinkedTabId?: (messageId: string) => number | null;
+  onGoToWorkspaceByNum?: (num: number) => void;
+  pendingMessageSelect?: string | null;
+  onPendingMessageSelectHandled?: () => void;
 }
 
 function formatTime(ts: number): string {
@@ -66,6 +78,7 @@ function isSelected(item: MessageItem, sel: SelectedItem | null): boolean {
 function toDbRow(item: MessageItem) {
   return {
     id: itemKey(item),
+    message_id: item.messageId,
     source: item.source,
     time: item.time,
     email_subject: item.source === 'email' ? item.subject : item.source === 'custom' ? item.subject : null,
@@ -82,23 +95,68 @@ function toDbRow(item: MessageItem) {
 
 // Convert a DB row back to a MessageItem
 function fromDbRow(row: any): MessageItem {
+  const status: MessageStatus = row.status || 'UNREAD';
+  const wsRaw = row.workspace_num;
+  const workspaceNums: number[] | undefined = wsRaw
+    ? String(wsRaw).split(',').map(Number).filter(n => !isNaN(n))
+    : undefined;
+  const summary: string | undefined = (row.summary && row.summary !== 'null' && String(row.summary).trim()) ? String(row.summary).trim() : undefined;
+  const messageId = row.message_id || uuidv4();
   if (row.source === 'email') {
-    return { source: 'email', time: row.time, subject: row.email_subject || '', from: row.email_from || '', date: row.date_str || '', preview: row.email_preview || '', seq: row.email_seq || 0, uid: row.email_uid || 0 };
+    return { messageId, source: 'email', time: row.time, subject: row.email_subject || '', from: row.email_from || '', date: row.date_str || '', preview: row.email_preview || '', seq: row.email_seq || 0, uid: row.email_uid || 0, status, workspaceNums, summary };
   }
   if (row.source === 'discord') {
-    return { source: 'discord', time: row.time, author: row.discord_author || '', content: row.discord_content || '', dateStr: row.date_str || '', attachments: row.discord_attachments || 0, id: row.id.replace('discord:', '') };
+    return { messageId, source: 'discord', time: row.time, author: row.discord_author || '', content: row.discord_content || '', dateStr: row.date_str || '', attachments: row.discord_attachments || 0, id: row.id.replace('discord:', ''), status, workspaceNums, summary };
   }
-  return { source: 'custom', time: row.time, subject: row.email_subject || '', sender: row.email_from || '', body: row.email_preview || '', id: row.id };
+  return { messageId, source: 'custom', time: row.time, subject: row.email_subject || '', sender: row.email_from || '', body: row.email_preview || '', id: row.id, status, workspaceNums, summary };
+}
+
+function SyncPreviewDetails({ item, syncPreview, setSyncPreview, workspaceNames }: { item: MessageItem; syncPreview: string | null; setSyncPreview: (v: string) => void; workspaceNames?: string[] }) {
+  const loadPreview = useCallback(() => {
+    if (syncPreview) return;
+    if (!window.browser.previewSyncPayload) {
+      setSyncPreview('previewSyncPayload not available — rebuild required');
+      return;
+    }
+    window.browser.previewSyncPayload({
+      source: item.source,
+      subject: item.source !== 'discord' ? (item as any).subject : undefined,
+      from: item.source === 'email' ? (item as any).from : item.source === 'custom' ? (item as any).sender : undefined,
+      preview: item.source === 'email' ? (item as any).preview : item.source === 'custom' ? (item as any).body : undefined,
+      content: item.source === 'discord' ? (item as any).content : undefined,
+      author: item.source === 'discord' ? (item as any).author : undefined,
+      time: item.time,
+      uid: item.source === 'email' ? (item as any).uid : undefined,
+      existingWorkspaces: (workspaceNames || []).filter(n => n),
+    }).then(setSyncPreview).catch(() => setSyncPreview('Error loading payload'));
+  }, [item, syncPreview, setSyncPreview, workspaceNames]);
+
+  return (
+    <div className="mx-4 my-4">
+      {syncPreview ? (
+        <pre className="text-[10px] leading-relaxed text-neutral-500 dark:text-neutral-400 bg-neutral-100 dark:bg-neutral-800/50 rounded p-2 overflow-x-auto whitespace-pre-wrap">{syncPreview}</pre>
+      ) : (
+        <button
+          onClick={loadPreview}
+          className="text-[11px] text-neutral-400 dark:text-neutral-500 border border-neutral-200 dark:border-neutral-700 rounded px-2 py-1 bg-transparent cursor-pointer hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+        >
+          Show sync payload
+        </button>
+      )}
+    </div>
+  );
 }
 
 // Detail panel for a selected message
-function DetailPanel({ selected, items, onClose }: { selected: SelectedItem; items: MessageItem[]; onClose: () => void }) {
+function DetailPanel({ selected, items, onClose, onOpenLink, onGoToLinkedTab, hasLinkedTab, onGoToWorkspaceByNum, existingWorkspaceNums, workspaceNames }: { selected: SelectedItem; items: MessageItem[]; onClose: () => void; onOpenLink?: (url: string) => void; onGoToLinkedTab?: (messageId: string) => void; hasLinkedTab?: boolean; onGoToWorkspaceByNum?: (num: number) => void; existingWorkspaceNums?: Set<number>; workspaceNames?: string[] }) {
   const item = items.find(i => isSelected(i, selected));
+  const [syncPreview, setSyncPreview] = useState<string | null>(null);
   const [emailDetail, setEmailDetail] = useState<EmailDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
   useEffect(() => {
+    setSyncPreview(null);
     if (selected.source === 'email') {
       setDetailLoading(true);
       setDetailError(null);
@@ -149,9 +207,32 @@ function DetailPanel({ selected, items, onClose }: { selected: SelectedItem; ite
             <FiChevronsRight size={14} />
           </button>
           <FiMessageCircle size={14} className="text-pink-500" />
-          <span className="text-[13px] font-medium text-neutral-800 dark:text-neutral-200">Discord Message</span>
+          <span className="text-[13px] font-medium text-neutral-800 dark:text-neutral-200 truncate flex-1">Discord Message</span>
+          {hasLinkedTab && onGoToLinkedTab && (
+            <button
+              onClick={() => onGoToLinkedTab(item.messageId)}
+              className="text-[11px] px-2 py-1 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 border-none cursor-pointer hover:bg-blue-500/20 transition-colors shrink-0"
+            >
+              Go to tab
+            </button>
+          )}
+          {!hasLinkedTab && item.workspaceNums?.filter(num => existingWorkspaceNums?.has(num)).map(num => (
+            <button
+              key={num}
+              onClick={() => onGoToWorkspaceByNum?.(num)}
+              className="text-[11px] px-2 py-1 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 border-none cursor-pointer hover:bg-blue-500/20 transition-colors shrink-0"
+            >
+              Go to #{num}
+            </button>
+          ))}
         </div>
         <div className="flex-1 overflow-y-auto p-4">
+          <div className="mb-2 text-[11px] font-mono text-neutral-400 dark:text-neutral-500 select-all">{item.messageId}</div>
+          {item.summary && (
+            <div className="mb-3 px-3 py-2 rounded-md bg-neutral-100 dark:bg-neutral-800/50 text-[13px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
+              {item.summary}
+            </div>
+          )}
           <div className="flex items-baseline gap-2 mb-2">
             <span className="text-[16px] font-semibold" style={{ color: getAuthorColor(item.author) }}>{item.author}</span>
             <span className="text-[12px] text-neutral-400">{formatFullDate(item.time)}</span>
@@ -164,6 +245,7 @@ function DetailPanel({ selected, items, onClose }: { selected: SelectedItem; ite
               {item.attachments} attachment{item.attachments > 1 ? 's' : ''}
             </div>
           )}
+          <SyncPreviewDetails item={item} syncPreview={syncPreview} setSyncPreview={setSyncPreview} workspaceNames={workspaceNames} />
         </div>
       </div>
     );
@@ -177,10 +259,28 @@ function DetailPanel({ selected, items, onClose }: { selected: SelectedItem; ite
         <button onClick={onClose} className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 border-none bg-transparent cursor-pointer text-neutral-500">
           <FiChevronsRight size={14} />
         </button>
-        {item.source === 'email' ? <FiMail size={14} className="text-blue-500" /> : <FiInbox size={14} className="text-neutral-500" />}
+        {item.source === 'email' ? <FiMail size={14} className="text-blue-500" /> : <FiPlus size={14} className="text-green-500" />}
         <span className="text-[13px] font-medium text-neutral-800 dark:text-neutral-200 truncate flex-1">{detailTitle}</span>
+        {hasLinkedTab && onGoToLinkedTab && (
+          <button
+            onClick={() => onGoToLinkedTab(item.messageId)}
+            className="text-[11px] px-2 py-1 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 border-none cursor-pointer hover:bg-blue-500/20 transition-colors shrink-0"
+          >
+            Go to tab
+          </button>
+        )}
+        {!hasLinkedTab && item.workspaceNums?.map(num => (
+          <button
+            key={num}
+            onClick={() => onGoToWorkspaceByNum?.(num)}
+            className="text-[11px] px-2 py-1 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 border-none cursor-pointer hover:bg-blue-500/20 transition-colors shrink-0"
+          >
+            Go to #{num}
+          </button>
+        ))}
       </div>
       <div className="flex-1 overflow-y-auto">
+        <div className="px-4 pt-3 text-[11px] font-mono text-neutral-400 dark:text-neutral-500 select-all">{item.messageId}</div>
         {detailLoading && (
           <div className="flex items-center justify-center h-32 text-neutral-400 text-[14px]">Loading...</div>
         )}
@@ -189,6 +289,11 @@ function DetailPanel({ selected, items, onClose }: { selected: SelectedItem; ite
         )}
         {emailDetail && (
           <div className="p-4">
+            {item.summary && (
+              <div className="mb-3 px-3 py-2 rounded-md bg-neutral-100 dark:bg-neutral-800/50 text-[13px] text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                {item.summary}
+              </div>
+            )}
             <h2 className="text-[18px] font-semibold text-neutral-800 dark:text-neutral-200 mb-3">{emailDetail.subject}</h2>
             <div className="flex flex-col gap-1 mb-4 text-[13px]">
               <div className="flex gap-2">
@@ -209,8 +314,15 @@ function DetailPanel({ selected, items, onClose }: { selected: SelectedItem; ite
             <div className="border-t border-neutral-200 dark:border-neutral-700 pt-4">
               {emailDetail.html ? (
                 <div
-                  className="text-[14px] leading-relaxed text-neutral-800 dark:text-neutral-200 [&_a]:text-blue-500 [&_a]:underline [&_img]:max-w-full [&_img]:h-auto"
+                  className="text-[14px] leading-relaxed text-neutral-800 dark:text-neutral-200 [&_a]:text-blue-500 [&_a]:underline [&_a]:cursor-pointer [&_img]:max-w-full [&_img]:h-auto"
                   dangerouslySetInnerHTML={{ __html: emailDetail.html }}
+                  onClick={(e) => {
+                    const anchor = (e.target as HTMLElement).closest('a');
+                    if (anchor?.href && onOpenLink) {
+                      e.preventDefault();
+                      onOpenLink(anchor.href);
+                    }
+                  }}
                 />
               ) : (
                 <pre className="text-[14px] leading-relaxed text-neutral-800 dark:text-neutral-200 whitespace-pre-wrap font-[inherit]">
@@ -220,23 +332,33 @@ function DetailPanel({ selected, items, onClose }: { selected: SelectedItem; ite
             </div>
           </div>
         )}
+        <SyncPreviewDetails item={item} syncPreview={syncPreview} setSyncPreview={setSyncPreview} workspaceNames={workspaceNames} />
       </div>
     </div>
   );
 }
 
-export function MessagesView({ tabId, hidden }: Props) {
+export function MessagesView({ tabId, hidden, onCreateWorkspace, onOpenLink, workspaceNames, onGoToLinkedTab, findLinkedTabId, onGoToWorkspaceByNum, pendingMessageSelect, onPendingMessageSelectHandled }: Props) {
   const [items, setItems] = useState<MessageItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const loadingMoreRef = useRef(false);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [discordError, setDiscordError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<'all' | 'email' | 'discord' | 'custom'>('all');
+  const [filter, setFilter] = useState<'all' | 'email' | 'discord' | 'custom' | 'actionable'>('all');
   const [selected, setSelected] = useState<SelectedItem | null>(null);
   const [listWidth, setListWidth] = useState(380);
   const resizingRef = useRef(false);
   const [emailTotal, setEmailTotal] = useState<number | null>(null);
+  const [showCompose, setShowCompose] = useState(false);
+  const [composeSender, setComposeSender] = useState('');
+  const [composeSubject, setComposeSubject] = useState('');
+  const [composeBody, setComposeBody] = useState('');
+  const [composeSaving, setComposeSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState({ current: 0, total: 0 });
+  const syncAbortRef = useRef(false);
+  const [summaryText, setSummaryText] = useState<string | null>(null);
 
   // Pagination cursors: track oldest seq for email, oldest message ID for discord
   const emailOldestSeqRef = useRef<number | null>(null); // null = no more
@@ -302,8 +424,8 @@ export function MessagesView({ tabId, hidden }: Props) {
         for (const msg of emailResult.messages) {
           const t = msg.date ? new Date(msg.date).getTime() : 0;
           newItems.push({
-            source: 'email', time: t,
-            subject: msg.subject, from: msg.from, date: msg.date, preview: msg.preview, seq: msg.seq || 0, uid: msg.uid || 0,
+            messageId: uuidv4(), source: 'email', time: t,
+            subject: msg.subject, from: msg.from, date: msg.date, preview: msg.preview, seq: msg.seq || 0, uid: msg.uid || 0, status: 'UNREAD',
           });
           if (t > 0 && t < emailOldestTimeRef.current) emailOldestTimeRef.current = t;
         }
@@ -318,8 +440,8 @@ export function MessagesView({ tabId, hidden }: Props) {
         for (const msg of discordResult.messages) {
           const t = msg.time ? new Date(msg.time).getTime() : 0;
           newItems.push({
-            source: 'discord', time: t,
-            author: msg.author, content: msg.content, dateStr: msg.time, attachments: msg.attachments, id: msg.id || '',
+            messageId: uuidv4(), source: 'discord', time: t,
+            author: msg.author, content: msg.content, dateStr: msg.time, attachments: msg.attachments, id: msg.id || '', status: 'UNREAD',
           });
           if (t > 0 && t < discordOldestTimeRef.current) discordOldestTimeRef.current = t;
         }
@@ -433,8 +555,8 @@ export function MessagesView({ tabId, hidden }: Props) {
       for (const msg of emailResult.messages) {
         const t = msg.date ? new Date(msg.date).getTime() : 0;
         freshItems.push({
-          source: 'email', time: t,
-          subject: msg.subject, from: msg.from, date: msg.date, preview: msg.preview, seq: msg.seq || 0, uid: msg.uid || 0,
+          messageId: uuidv4(), source: 'email', time: t,
+          subject: msg.subject, from: msg.from, date: msg.date, preview: msg.preview, seq: msg.seq || 0, uid: msg.uid || 0, status: 'UNREAD',
         });
         if (t > 0 && t < emailOldestTimeRef.current) emailOldestTimeRef.current = t;
       }
@@ -446,8 +568,8 @@ export function MessagesView({ tabId, hidden }: Props) {
       for (const msg of discordResult.messages) {
         const t = msg.time ? new Date(msg.time).getTime() : 0;
         freshItems.push({
-          source: 'discord', time: t,
-          author: msg.author, content: msg.content, dateStr: msg.time, attachments: msg.attachments, id: msg.id || '',
+          messageId: uuidv4(), source: 'discord', time: t,
+          author: msg.author, content: msg.content, dateStr: msg.time, attachments: msg.attachments, id: msg.id || '', status: 'UNREAD',
         });
         if (t > 0 && t < discordOldestTimeRef.current) discordOldestTimeRef.current = t;
       }
@@ -455,10 +577,20 @@ export function MessagesView({ tabId, hidden }: Props) {
       discordOldestIdRef.current = discordResult.messages.length >= 20 && oldest?.id ? oldest.id : null;
     }
 
-    // Merge fresh with existing (cached) items
+    // Merge fresh with existing (cached) items, preserving status/workspaceNums/summary
     setItems(prev => {
       const existing = new Map(prev.map(item => [itemKey(item), item]));
-      for (const item of freshItems) existing.set(itemKey(item), item);
+      for (const item of freshItems) {
+        const prevItem = existing.get(itemKey(item));
+        if (prevItem && prevItem.status !== 'UNREAD') {
+          // Preserve classified status — only update content fields
+          existing.set(itemKey(item), { ...item, status: prevItem.status, workspaceNums: prevItem.workspaceNums, summary: prevItem.summary });
+        } else if (!prevItem) {
+          // New item not in cache — add as UNREAD
+          existing.set(itemKey(item), item);
+        }
+        // If prevItem exists and is UNREAD, update with fresh content (still UNREAD)
+      }
       const merged = Array.from(existing.values());
       merged.sort((a, b) => b.time - a.time);
       return merged;
@@ -516,9 +648,10 @@ export function MessagesView({ tabId, hidden }: Props) {
     // Listen for new messages pushed from main process
     window.browser.onNewEmails((messages) => {
       const newItems: MessageItem[] = messages.map(msg => ({
+        messageId: uuidv4(),
         source: 'email' as const,
         time: msg.date ? new Date(msg.date).getTime() : Date.now(),
-        subject: msg.subject, from: msg.from, date: msg.date, preview: msg.preview, seq: msg.seq, uid: msg.uid,
+        subject: msg.subject, from: msg.from, date: msg.date, preview: msg.preview, seq: msg.seq, uid: msg.uid, status: 'UNREAD' as const,
       }));
       setItems(prev => {
         const existing = new Set(prev.map(itemKey));
@@ -530,9 +663,10 @@ export function MessagesView({ tabId, hidden }: Props) {
 
     window.browser.onNewDiscordMessages((messages) => {
       const newItems: MessageItem[] = messages.map(msg => ({
+        messageId: uuidv4(),
         source: 'discord' as const,
         time: msg.time ? new Date(msg.time).getTime() : Date.now(),
-        author: msg.author, content: msg.content, dateStr: msg.time, attachments: msg.attachments, id: msg.id,
+        author: msg.author, content: msg.content, dateStr: msg.time, attachments: msg.attachments, id: msg.id, status: 'UNREAD' as const,
       }));
       setItems(prev => {
         const existing = new Set(prev.map(itemKey));
@@ -552,6 +686,18 @@ export function MessagesView({ tabId, hidden }: Props) {
       window.browser.stopMessageSync().catch(() => {});
     };
   }, [fetchInitial]);
+
+  // Handle pending message selection from external navigation
+  useEffect(() => {
+    if (!pendingMessageSelect || items.length === 0) return;
+    const item = items.find(i => i.messageId === pendingMessageSelect);
+    if (item) {
+      if (item.source === 'email') setSelected({ source: 'email', uid: item.uid });
+      else if (item.source === 'discord') setSelected({ source: 'discord', id: item.id });
+      else setSelected({ source: 'custom', id: item.id });
+    }
+    onPendingMessageSelectHandled?.();
+  }, [pendingMessageSelect, items, onPendingMessageSelectHandled]);
 
   const loadMoreRef = useRef(loadMore);
   loadMoreRef.current = loadMore;
@@ -574,12 +720,219 @@ export function MessagesView({ tabId, hidden }: Props) {
 
   const filtered = useMemo(() => {
     if (filter === 'all') return items;
+    if (filter === 'actionable') return items.filter(m => m.status === 'UNREAD' || m.status === 'TODO');
     return items.filter(m => m.source === filter);
   }, [items, filter]);
 
   const emailCount = useMemo(() => items.filter(m => m.source === 'email').length, [items]);
   const discordCount = useMemo(() => items.filter(m => m.source === 'discord').length, [items]);
   const customCount = useMemo(() => items.filter(m => m.source === 'custom').length, [items]);
+  const actionableCount = useMemo(() => items.filter(m => m.status === 'UNREAD' || m.status === 'TODO').length, [items]);
+  const handleCreateCustom = useCallback(async () => {
+    if (!composeSubject.trim() && !composeBody.trim()) return;
+    setComposeSaving(true);
+    try {
+      const result = await window.browser.dbCreateCustomMessage({
+        subject: composeSubject.trim(),
+        sender: composeSender.trim() || 'Me',
+        body: composeBody.trim(),
+      });
+      const newItem: MessageItem = {
+        messageId: result.messageId,
+        source: 'custom',
+        time: result.time,
+        subject: composeSubject.trim(),
+        sender: composeSender.trim() || 'Me',
+        body: composeBody.trim(),
+        id: result.id,
+        status: 'UNREAD',
+      };
+      setItems(prev => [newItem, ...prev].sort((a, b) => b.time - a.time));
+      setComposeSender('');
+      setComposeSubject('');
+      setComposeBody('');
+      setShowCompose(false);
+    } catch { /* ignore */ }
+    setComposeSaving(false);
+  }, [composeSender, composeSubject, composeBody]);
+
+  const handleSync = useCallback(async () => {
+    if (syncing) {
+      syncAbortRef.current = true;
+      return;
+    }
+    syncAbortRef.current = false;
+    setSyncing(true);
+    try {
+      const unreadItems = items.filter(it => it.status === 'UNREAD');
+      const alreadyClassified = items.length - unreadItems.length;
+      const totalItems = items.length;
+      setSyncProgress({ current: -1, total: totalItems });
+
+      // Build global context: raw summary → structured digest
+      const { text: rawSummary } = await buildSummaryText(items, 100000);
+      const globalContext = rawSummary ? (await window.browser.summarizeInbox(rawSummary) || '') : '';
+
+      setSyncProgress({ current: alreadyClassified, total: totalItems });
+
+      for (let i = 0; i < unreadItems.length; i++) {
+        if (syncAbortRef.current) break;
+        setSyncProgress({ current: alreadyClassified + i + 1, total: totalItems });
+        const item = unreadItems[i];
+        const key = itemKey(item);
+
+        const payload = {
+          id: key,
+          source: item.source,
+          subject: item.source === 'email' ? item.subject : item.source === 'custom' ? item.subject : undefined,
+          from: item.source === 'email' ? item.from : item.source === 'custom' ? item.sender : undefined,
+          preview: item.source === 'email' ? item.preview : item.source === 'custom' ? item.body : undefined,
+          content: item.source === 'discord' ? item.content : undefined,
+          author: item.source === 'discord' ? item.author : undefined,
+          time: item.time,
+          uid: item.source === 'email' ? item.uid : undefined,
+          existingWorkspaces: (workspaceNames || []).filter(n => n),
+          globalContext,
+        };
+
+        const result = await window.browser.categorizeMessage(payload);
+        if (!result) continue;
+
+        const newStatus = result.status as MessageStatus;
+        const wsNums: number[] = [];
+
+        // If the model matched existing workspaces, use those IDs directly
+        if (newStatus === 'TODO' && (result as any).matchedWorkspaces && (result as any).matchedWorkspaces.length > 0) {
+          for (const num of (result as any).matchedWorkspaces) {
+            if (typeof num === 'number') wsNums.push(num);
+          }
+        } else if (newStatus === 'TODO' && result.todos && result.todos.length > 0 && onCreateWorkspace) {
+          // Build original message context
+          let messageContext = '';
+          if (item.source === 'email') {
+            messageContext = `---\n\n## Original Email\n\n**From:** ${item.from}\n**Subject:** ${item.subject}\n**Date:** ${item.date}\n\n${item.preview}`;
+          } else if (item.source === 'discord') {
+            messageContext = `---\n\n## Original Discord Message\n\n**From:** ${item.author}\n\n${item.content}`;
+          } else if (item.source === 'custom') {
+            messageContext = `---\n\n## Original Message\n\n**From:** ${item.sender}\n**Subject:** ${item.subject}\n\n${item.body}`;
+          }
+
+          for (const todo of result.todos) {
+            // Dedup: check if a workspace with similar intention already exists
+            const taskLower = todo.taskName.toLowerCase().trim();
+            const existingMatch = (workspaceNames || []).find(name => {
+              const existing = name.replace(/^#\d+:\s*/, '').toLowerCase().trim();
+              return existing && (existing === taskLower || existing.includes(taskLower) || taskLower.includes(existing));
+            });
+
+            if (existingMatch) {
+              const match = existingMatch.match(/^#(\d+):/);
+              if (match) wsNums.push(parseInt(match[1]));
+            } else {
+              const wsNum = await window.browser.getNextWorkspaceNum();
+              wsNums.push(wsNum);
+              const notesContent = `# ${todo.taskName}\n\n${todo.notes || ''}\n\n${messageContext}`;
+              onCreateWorkspace(`#${wsNum}: ${todo.taskName}`, '', notesContent, [item.messageId]);
+            }
+          }
+        }
+
+        const summaryText = (result.summary && result.summary !== 'null' && result.summary.trim()) ? result.summary.trim() : undefined;
+        await window.browser.dbUpdateMessageStatus(key, newStatus, wsNums.length > 0 ? wsNums : undefined, summaryText);
+
+        setItems(prev => prev.map(it =>
+          itemKey(it) === key ? { ...it, status: newStatus, workspaceNums: wsNums.length > 0 ? wsNums : undefined, summary: summaryText } : it
+        ));
+      }
+    } catch (err) {
+      console.error('Sync error:', err);
+    } finally {
+      setSyncing(false);
+      setSyncProgress({ current: 0, total: 0 });
+    }
+  }, [syncing, items, onCreateWorkspace, workspaceNames]);
+
+  const handleClear = useCallback(async () => {
+    await window.browser.dbResetAllStatuses();
+    setItems(prev => prev.map(it => ({ ...it, status: 'UNREAD' as MessageStatus, workspaceNums: undefined, summary: undefined })));
+  }, []);
+
+  const [archiving, setArchiving] = useState(false);
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
+  const headerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      setHeaderCollapsed(el.clientWidth < 500);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const handleArchive = useCallback(async () => {
+    if (archiving) return;
+    setArchiving(true);
+    try {
+      const toArchive = items.filter(it => it.source === 'email' && (it.status === 'DONE' || it.status === 'SPAM'));
+      const uids = toArchive.map(it => it.uid);
+      if (uids.length > 0) {
+        await window.browser.archiveEmailsBulk(uids);
+        // Remove from DB cache
+        const keys = toArchive.map(itemKey);
+        await window.browser.dbDeleteMessages(keys).catch(() => {});
+      }
+      // Remove archived emails from local state
+      const archivedKeys = new Set(toArchive.map(itemKey));
+      setItems(prev => prev.filter(it => !archivedKeys.has(itemKey(it))));
+      // Refresh email cache — modal stays until this completes
+      await fetchInitial();
+    } finally {
+      setArchiving(false);
+    }
+  }, [archiving, items, fetchInitial]);
+
+  const buildSummaryText = useCallback(async (messageItems: MessageItem[], maxChars = 100000) => {
+    let text = '';
+    let emailsIncluded = 0;
+    let discordIncluded = 0;
+    const sorted = [...messageItems].sort((a, b) => b.time - a.time);
+
+    for (const item of sorted) {
+      let entry = '';
+      if (item.source === 'email') {
+        const content = item.summary || item.preview;
+        entry = `--- EMAIL [${item.status}] ---\nFrom: ${item.from}\nSubject: ${item.subject}\nDate: ${item.date}\n${content}\n\n`;
+      } else if (item.source === 'discord') {
+        const content = item.summary || item.content;
+        entry = `--- DISCORD [${item.status}] ---\n${item.author} (${item.dateStr}): ${content}\n\n`;
+      } else {
+        continue;
+      }
+
+      if (text.length + entry.length > maxChars) break;
+      text += entry;
+      if (item.source === 'email') emailsIncluded++;
+      else if (item.source === 'discord') discordIncluded++;
+    }
+
+    const totalEmails = messageItems.filter(i => i.source === 'email').length;
+    const totalDiscord = messageItems.filter(i => i.source === 'discord').length;
+    return { text, emailsIncluded, discordIncluded, totalEmails, totalDiscord };
+  }, []);
+
+  const handleSummary = useCallback(async () => {
+    const { text, emailsIncluded, discordIncluded, totalEmails, totalDiscord } = await buildSummaryText(items);
+    const header = `Summary: ${emailsIncluded}/${totalEmails} emails, ${discordIncluded}/${totalDiscord} discord messages (${text.length.toLocaleString()} chars)\n`;
+    // Show immediately with loading indicator
+    setSummaryText(header + '\nGenerating overview...\n\n' + text);
+    // Generate structured digest
+    const digest = text ? await window.browser.summarizeInbox(text) : null;
+    const digestSection = digest ? `\n${digest}\n\n${'='.repeat(80)}\n\n` : '\n';
+    setSummaryText(header + digestSection + text);
+  }, [items, buildSummaryText]);
+
   const bothErrored = !!emailError && !!discordError;
   const noItems = !loading && filtered.length === 0 && !bothErrored;
 
@@ -588,39 +941,116 @@ export function MessagesView({ tabId, hidden }: Props) {
       {/* Left: message list */}
       <div className={`flex flex-col shrink-0 min-w-0 h-full`} style={selected ? { width: listWidth } : { flex: 1 }}>
         {/* Header */}
-        <div className="flex items-center justify-between px-4 h-11 border-b border-neutral-200 dark:border-neutral-800 shrink-0">
-          <div className="flex items-center gap-2">
-            <FiInbox size={16} className="text-neutral-500" />
-            {!selected && <span className="text-[15px] font-medium text-neutral-800 dark:text-neutral-200">Messages</span>}
-            <div className="flex gap-1 ml-1">
-              {([...(['all', 'email', 'discord'] as const), ...(customCount > 0 ? ['custom' as const] : [])]).map(f => (
-                <button
-                  key={f}
-                  onClick={() => setFilter(f)}
-                  className={`px-2 py-0.5 rounded-full text-[11px] font-medium border-none cursor-pointer transition-colors
-                    ${filter === f
-                      ? 'bg-neutral-800 dark:bg-neutral-200 text-white dark:text-neutral-900'
-                      : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
-                    }`}
-                >
-                  {f === 'all' ? `All (${items.length})` : f === 'email' ? `Email (${emailCount})` : f === 'discord' ? `Discord (${discordCount})` : `Notes (${customCount})`}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-[11px] text-neutral-400 dark:text-neutral-500 whitespace-nowrap">
-              {emailCount}{emailTotal ? `/${emailTotal}` : ''} emails · {discordCount} discord
-            </span>
-            <button
-              onClick={fetchInitial}
-              disabled={loading}
-              className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[12px] text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors border-none bg-transparent cursor-pointer disabled:opacity-50"
+        <div ref={headerRef} className="flex items-center px-4 h-11 border-b border-neutral-200 dark:border-neutral-800 shrink-0 gap-2 min-w-0">
+          <span className="w-8 h-8 flex items-center justify-center shrink-0"><FiInbox size={16} className="text-neutral-500" /></span>
+          {!selected && !headerCollapsed && <span className="text-[15px] font-medium text-neutral-800 dark:text-neutral-200 shrink-0">Messages</span>}
+          {!headerCollapsed && <div className="flex gap-1 shrink-0">
+            {(['all', 'actionable', 'email', 'discord', 'custom'] as const).map(f => (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                className={`px-2 py-1 rounded-full text-[11px] font-medium border-none cursor-pointer transition-colors whitespace-nowrap
+                  ${filter === f
+                    ? 'bg-neutral-800 dark:bg-neutral-200 text-white dark:text-neutral-900'
+                    : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
+                  }`}
+              >
+                {f === 'all' ? `All (${items.length})` : f === 'actionable' ? `Actionable (${actionableCount})` : f === 'email' ? `Email (${emailCount})` : f === 'discord' ? `Discord (${discordCount})` : `Custom (${customCount})`}
+              </button>
+            ))}
+          </div>}
+          <div className="flex-1" />
+          <div className="flex items-center gap-1 shrink-0">
+            {!headerCollapsed && <button
+              onClick={handleSync}
+              className="flex items-center px-2.5 py-1 rounded-md text-[11px] font-medium bg-black dark:bg-white text-white dark:text-black hover:bg-neutral-800 dark:hover:bg-neutral-200 transition-colors border-none cursor-pointer"
             >
-              <FiRefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+              {syncing ? (syncProgress.current === -1 ? 'Summarizing...' : `${syncProgress.current}/${syncProgress.total}`) : 'Sync'}
+            </button>}
+            <button
+              onClick={async () => {
+                const menuItems: { label: string; id: string }[] = [];
+                if (headerCollapsed) {
+                  menuItems.push(
+                    { label: `All (${items.length})`, id: 'filter-all' },
+                    { label: `Actionable (${actionableCount})`, id: 'filter-actionable' },
+                    { label: `Email (${emailCount})`, id: 'filter-email' },
+                    { label: `Discord (${discordCount})`, id: 'filter-discord' },
+                    { label: `Custom (${customCount})`, id: 'filter-custom' },
+                    { label: '—', id: 'sep1' },
+                    { label: syncing ? (syncProgress.current === -1 ? 'Summarizing...' : `Sync (${syncProgress.current}/${syncProgress.total})`) : 'Sync', id: 'sync' },
+                  );
+                }
+                menuItems.push(
+                  { label: 'Refresh', id: 'refresh' },
+                  { label: 'New Message', id: 'compose' },
+                  { label: 'Clear All Statuses', id: 'clear' },
+                  { label: 'Archive', id: 'archive' },
+                  { label: 'Summary', id: 'summary' },
+                );
+                const action = await window.browser.showContextMenu(menuItems);
+                if (action === 'refresh') fetchInitial();
+                else if (action === 'compose') setShowCompose(v => !v);
+                else if (action === 'clear') handleClear();
+                else if (action === 'archive') handleArchive();
+                else if (action === 'summary') handleSummary();
+                else if (action === 'sync') handleSync();
+                else if (action === 'filter-all') setFilter('all');
+                else if (action === 'filter-actionable') setFilter('actionable');
+                else if (action === 'filter-email') setFilter('email');
+                else if (action === 'filter-discord') setFilter('discord');
+                else if (action === 'filter-custom') setFilter('custom');
+              }}
+              className="flex items-center px-1.5 py-1 rounded-md text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors border-none bg-transparent cursor-pointer text-[14px] font-bold"
+            >
+              ···
             </button>
           </div>
         </div>
+
+        {/* Compose form */}
+        {showCompose && (
+          <div className="border-b border-neutral-200 dark:border-neutral-800 px-4 py-3 bg-neutral-50 dark:bg-neutral-900/50">
+            <div className="flex flex-col gap-2">
+              <input
+                type="text"
+                placeholder="Sender (default: Me)"
+                value={composeSender}
+                onChange={e => setComposeSender(e.target.value)}
+                className="px-2 py-1.5 rounded-md text-[13px] bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 outline-none focus:border-neutral-400 dark:focus:border-neutral-500"
+              />
+              <input
+                type="text"
+                placeholder="Subject"
+                value={composeSubject}
+                onChange={e => setComposeSubject(e.target.value)}
+                className="px-2 py-1.5 rounded-md text-[13px] bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 outline-none focus:border-neutral-400 dark:focus:border-neutral-500"
+              />
+              <textarea
+                placeholder="Message"
+                value={composeBody}
+                onChange={e => setComposeBody(e.target.value)}
+                rows={3}
+                className="px-2 py-1.5 rounded-md text-[13px] bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 text-neutral-800 dark:text-neutral-200 outline-none focus:border-neutral-400 dark:focus:border-neutral-500 resize-none"
+              />
+              <div className="flex gap-2 justify-end">
+                <button
+                  onClick={() => { setShowCompose(false); setComposeSender(''); setComposeSubject(''); setComposeBody(''); }}
+                  className="px-3 py-1 rounded-md text-[12px] text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700 border-none bg-transparent cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleCreateCustom}
+                  disabled={composeSaving || (!composeSubject.trim() && !composeBody.trim())}
+                  className="px-3 py-1 rounded-md text-[12px] font-medium text-white bg-neutral-800 hover:bg-neutral-900 dark:bg-neutral-200 dark:text-neutral-900 dark:hover:bg-neutral-300 border-none cursor-pointer disabled:opacity-50"
+                >
+                  {composeSaving ? 'Creating...' : 'Create'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* List */}
         <div className="flex-1 overflow-y-auto overflow-x-hidden">
@@ -653,8 +1083,8 @@ export function MessagesView({ tabId, hidden }: Props) {
             const title = item.source === 'email' ? item.subject : item.source === 'discord' ? item.content : item.subject;
             const sender = item.source === 'email' ? item.from : item.source === 'discord' ? item.author : item.sender;
             const key = itemKey(item);
-            const sourceLabel = item.source === 'email' ? 'Email' : item.source === 'discord' ? 'Discord' : 'Note';
-            const sourceColor = item.source === 'email' ? 'text-blue-500' : item.source === 'discord' ? 'text-pink-500' : 'text-neutral-500';
+            const sourceLabel = item.source === 'email' ? 'Email' : item.source === 'discord' ? 'Discord' : 'Custom';
+            const sourceColor = item.source === 'email' ? 'text-blue-500' : item.source === 'discord' ? 'text-pink-500' : 'text-green-500';
             return (
               <div
                 key={key}
@@ -675,8 +1105,22 @@ export function MessagesView({ tabId, hidden }: Props) {
                 <span className="text-[13px] text-neutral-800 dark:text-neutral-200 truncate flex-1 min-w-0">
                   {title}
                 </span>
-                <span className="text-[11px] text-neutral-400 w-[70px] shrink-0 text-right">
+                <span className="text-[11px] text-neutral-400 w-[110px] shrink-0 text-right">
                   {formatTime(item.time)}
+                </span>
+                <span className="w-[90px] shrink-0 flex justify-end">
+                  <span className={`text-[10px] font-medium text-center rounded-full py-0.5 px-2.5 whitespace-nowrap ${
+                    item.status === 'TODO' ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' :
+                    item.status === 'SPAM' ? 'bg-neutral-100 text-neutral-400 dark:bg-neutral-800 dark:text-neutral-500' :
+                    item.status === 'DONE' ? 'bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400' :
+                    'bg-blue-50 text-blue-400 dark:bg-blue-900/20 dark:text-blue-500'
+                  }`}>
+                    {item.status === 'TODO' && item.workspaceNums?.length
+                      ? `TODO ${item.workspaceNums.map(n => '#' + n).join(', ')}`
+                      : item.status === 'DONE' && item.workspaceNums?.length
+                      ? `DONE ${item.workspaceNums.map(n => '#' + n).join(', ')}`
+                      : item.status || 'NEW'}
+                  </span>
                 </span>
               </div>
             );
@@ -722,9 +1166,65 @@ export function MessagesView({ tabId, hidden }: Props) {
             }}
           />
           <div className="flex-1 min-w-0 h-full">
-            <DetailPanel selected={selected} items={items} onClose={() => setSelected(null)} />
+            <DetailPanel
+              selected={selected}
+              items={items}
+              onClose={() => setSelected(null)}
+              onOpenLink={onOpenLink}
+              onGoToLinkedTab={onGoToLinkedTab}
+              hasLinkedTab={(() => {
+                const selItem = items.find(i => isSelected(i, selected));
+                return !!(selItem && findLinkedTabId?.(selItem.messageId) !== null);
+              })()}
+              onGoToWorkspaceByNum={onGoToWorkspaceByNum}
+              existingWorkspaceNums={new Set(
+                (workspaceNames || [])
+                  .map(n => n.match(/^#(\d+):/))
+                  .filter(Boolean)
+                  .map(m => parseInt(m![1]))
+              )}
+              workspaceNames={workspaceNames}
+            />
           </div>
         </>
+      )}
+      {/* Summary modal */}
+      {summaryText !== null && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setSummaryText(null)}>
+          <div
+            className="w-[90%] h-[85%] bg-white dark:bg-neutral-900 rounded-xl shadow-2xl flex flex-col overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 h-11 border-b border-neutral-200 dark:border-neutral-700 shrink-0">
+              <span className="text-[13px] font-medium text-neutral-800 dark:text-neutral-200">
+                {summaryText.split('\n')[0]}
+              </span>
+              <button
+                onClick={() => setSummaryText(null)}
+                className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 border-none bg-transparent cursor-pointer text-[18px]"
+              >
+                ×
+              </button>
+            </div>
+            <textarea
+              readOnly
+              value={summaryText}
+              className="flex-1 w-full resize-none border-none outline-none bg-transparent text-[12px] leading-relaxed text-neutral-700 dark:text-neutral-300 p-5 font-mono"
+            />
+          </div>
+        </div>
+      )}
+      {/* Archiving modal */}
+      {archiving && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white dark:bg-neutral-900 rounded-xl shadow-2xl px-8 py-6 flex flex-col items-center gap-3">
+            <svg className="animate-spin w-6 h-6 text-blue-500" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.25" />
+              <path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+            </svg>
+            <span className="text-[13px] text-neutral-600 dark:text-neutral-300">Archiving...</span>
+          </div>
+        </div>
       )}
     </div>
   );
