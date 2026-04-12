@@ -41,6 +41,7 @@ export interface DisplayMessage {
   pdfs?: PdfAttachment[];
   searchResults?: SearchResults;
   durationMs?: number;
+  modelLabel?: string;
   toolCalls?: ToolCallDisplay[];
 }
 
@@ -59,6 +60,7 @@ interface Props {
   initialQuery?: string;
   onInitialQueryConsumed?: (tabId: number) => void;
   visitHistory?: HistoryEntry[];
+  onOpenSpecialTab?: (tabType?: 'messages' | 'notes' | 'history') => void;
 }
 
 function looksLikeUrl(input: string): boolean {
@@ -252,7 +254,7 @@ function applySearchResultsToMessages(messages: DisplayMessage[], searchResults?
 
 let nextRequestId = 0;
 
-export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, onTitleChange, onNavigate, onOpenLink, onThinkingChange, initialQuery, onInitialQueryConsumed, visitHistory = [] }: Props) {
+export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, onTitleChange, onNavigate, onOpenLink, onThinkingChange, initialQuery, onInitialQueryConsumed, visitHistory = [], onOpenSpecialTab }: Props) {
   const [isTyping, setIsTyping] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [inputValue, setInputValue] = useState('');
@@ -263,6 +265,15 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [pendingToolCalls, setPendingToolCalls] = useState<ToolCallDisplay[]>([]);
   const pendingToolCallsRef = useRef<ToolCallDisplay[]>([]);
+  const [messageQueue, setMessageQueue] = useState<string[]>([]);
+  const messageQueueRef = useRef<string[]>([]);
+  const updateQueue = useCallback((updater: (prev: string[]) => string[]) => {
+    setMessageQueue(prev => {
+      const next = updater(prev);
+      messageQueueRef.current = next;
+      return next;
+    });
+  }, []);
   const pendingSearchResultsRef = useRef<SearchResults | undefined>(undefined);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [showImages, setShowImages] = useState<Record<number, boolean>>({});
@@ -274,6 +285,8 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
   const ghostRequestRef = useRef(0);
   const suggestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const messagesDataRef = useRef<DisplayMessage[]>(messages);
+  messagesDataRef.current = messages;
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const currentRequestIdRef = useRef<string | null>(null);
@@ -398,9 +411,10 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
 
   useEffect(() => {
     if (messagesRef.current && isNearBottomRef.current) {
-      messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
+      const behavior = isTyping ? 'auto' : 'smooth';
+      messagesRef.current.scrollTo({ top: messagesRef.current.scrollHeight, behavior });
     }
-  }, [messages, isTyping, streamingContent]);
+  }, [messages, isTyping, streamingContent, messageQueue]);
 
   useEffect(() => {
     if (!hidden) {
@@ -449,7 +463,7 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
     }
   }, []);
 
-  const sendChat = useCallback(async (overrideText?: string) => {
+  const sendChat = useCallback(async (overrideText?: string, fromQueue = false) => {
     const text = (overrideText ?? inputValue).trim();
     if (!text && pendingImages.length === 0 && pendingPdfs.length === 0) return;
 
@@ -458,6 +472,34 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
       setInputValue('');
       const url = /^https?:\/\//i.test(text) ? text : 'https://' + text;
       onNavigate(url);
+      return;
+    }
+
+    // If no existing messages and input is "email", "discord", etc., open Messages tab
+    if (messages.length === 0 && text && pendingImages.length === 0) {
+      const lower = text.toLowerCase().trim();
+      if (lower === 'email' || lower === 'mail' || lower === 'inbox' || lower === 'discord' || lower === 'messages') {
+        setInputValue('');
+        onOpenSpecialTab?.('messages');
+        return;
+      }
+      if (lower === 'notes' || lower === 'note') {
+        setInputValue('');
+        onOpenSpecialTab?.('notes');
+        return;
+      }
+      if (lower === 'history') {
+        setInputValue('');
+        onOpenSpecialTab?.('history');
+        return;
+      }
+    }
+
+    // If model is busy, queue the message for later
+    if (isTyping && !fromQueue) {
+      updateQueue(prev => [...prev, text]);
+      setInputValue('');
+      if (inputRef.current) inputRef.current.style.height = 'auto';
       return;
     }
 
@@ -470,13 +512,19 @@ export function ChatView({ tabId, tabTitle, hidden, messages, onMessagesChange, 
       inputRef.current.style.height = 'auto';
     }
 
-    const baseMessages = editingIndex !== null ? messages.slice(0, editingIndex) : messages;
+    const currentMessages = messagesDataRef.current;
+    const baseMessages = editingIndex !== null ? currentMessages.slice(0, editingIndex) : currentMessages;
     setEditingIndex(null);
     const newMessages: DisplayMessage[] = [
       ...baseMessages,
       { role: 'user', content: text, images: images.length > 0 ? images : undefined, pdfs: pdfs.length > 0 ? pdfs : undefined },
     ];
     onMessagesChange(tabId, newMessages);
+    // Always scroll to bottom on send
+    isNearBottomRef.current = true;
+    requestAnimationFrame(() => {
+      messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' });
+    });
 
     const apiHistory: ChatMessage[] = [
       { role: 'system', content: `You are a helpful assistant built into a web browser. You are also a helpful search engine. Be concise and direct. Format links as markdown. Today's date is ${new Date().toISOString().split('T')[0]}.
@@ -510,6 +558,15 @@ Do not send Option A until you have already used the search tool, unless the use
 If you respond with Option A instead of a tool call, that is the end of your turn. Do not expect any more tools to run after a direct response. The user must send another message before you can continue.
 
 When multiple tool calls would help, call as many as possible in parallel in a single Option B response instead of serializing them across multiple turns.
+
+IMPORTANT: Your very first tool call for every new user message should ALWAYS be the thinking tool. Before searching, before responding, before anything else — call the thinking tool to clarify what the user is actually asking, what they might need, and what approach you should take. This is non-negotiable. After thinking, proceed with search or other tools as appropriate.
+
+Use the thinking tool frequently to share your honest, unfiltered reasoning with the user. Call it before making decisions, when weighing tradeoffs, when you are unsure, or when your approach changes. Do not hold back — the user wants radical transparency into your thought process.
+
+If the user asks you to do something that you cannot do with your current tools (e.g. access files, run code, manage servers, interact with services, or anything beyond web search and text generation), always try consultOpenclaw. OpenClaw is a powerful agent running on the user's server with access to tools, memory, and the ability to execute tasks on their behalf. When in doubt, ask OpenClaw. IMPORTANT: OpenClaw has NO context of your conversation — each call starts a fresh session. You must include all relevant context, background, and details in your question every time you consult it.
+
+When using the bash tool and you cd into a directory, ALWAYS first check for AGENTS.md or CLAUDE.md files in that directory and all parent directories by running: d="$PWD"; while [ "$d" != "/" ]; do cat "$d/AGENTS.md" "$d/CLAUDE.md" 2>/dev/null; d="$(dirname "$d")"; done
+If any are found, read and follow their instructions.
 
 IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within the output string. Escape quotes with \\".` },
       ...newMessages
@@ -589,14 +646,26 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
         const finalContent = accumulated;
         const finalMessages = applySearchResultsToMessages(msgsSnapshot, pendingSearchResultsRef.current);
         const collectedToolCalls = pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : undefined;
-        const assistantMsg: DisplayMessage = { role: 'assistant', content: finalContent, durationMs: Date.now() - startTime, toolCalls: collectedToolCalls };
+        const modelLabel = MODELS.find(m => m.id === selectedModel)?.label || selectedModel;
+        const assistantMsg: DisplayMessage = { role: 'assistant', content: finalContent, durationMs: Date.now() - startTime, modelLabel, toolCalls: collectedToolCalls };
 
         setPendingToolCalls([]);
         pendingToolCallsRef.current = [];
         pendingSearchResultsRef.current = undefined;
 
-        onMessagesChange(tabId, [...finalMessages, assistantMsg]);
+        const updatedMessages = [...finalMessages, assistantMsg];
+        messagesDataRef.current = updatedMessages;
+        onMessagesChange(tabId, updatedMessages);
         cleanupRef.current = null;
+
+        // Process next queued message
+        const nextQueue = messageQueueRef.current;
+        if (nextQueue.length > 0) {
+          const [nextMsg, ...rest] = nextQueue;
+          messageQueueRef.current = rest;
+          setMessageQueue(rest);
+          setTimeout(() => sendChat(nextMsg, true), 0);
+        }
       },
       onError(error: string) {
         setIsTyping(false);
@@ -607,9 +676,11 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
         onMessagesChange(tabId, [...applySearchResultsToMessages(msgsSnapshot, pendingSearchResultsRef.current), { role: 'error', content: error }]);
         pendingSearchResultsRef.current = undefined;
         cleanupRef.current = null;
+        messageQueueRef.current = [];
+        setMessageQueue([]);
       },
     }, selectedModel);
-  }, [inputValue, pendingImages, pendingPdfs, messages, tabId, tabTitle, selectedModel, onMessagesChange, onTitleChange, onThinkingChange]);
+  }, [inputValue, pendingImages, pendingPdfs, messages, tabId, tabTitle, selectedModel, onMessagesChange, onTitleChange, onThinkingChange, isTyping, updateQueue]);
 
   const retryRef = useRef<{ assistantIndex: number; modelId: string } | null>(null);
 
@@ -643,7 +714,8 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
     setIsTyping(false);
     onThinkingChange?.(tabId, false);
     setStreamingContent('');
-  }, [tabId, onThinkingChange]);
+    updateQueue(() => []);
+  }, [tabId, onThinkingChange, updateQueue]);
 
   const acceptAcSuggestion = (s: { url: string }) => {
     setShowAc(false);
@@ -758,6 +830,14 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
                       {msg.toolCalls.map((tc) => (
                         <ToolCallRow key={tc.toolCallId} toolCall={tc} />
                       ))}
+                      {msg.toolCalls.some(tc => (tc.toolName === 'readEmail' || tc.toolName === 'readDiscord') && tc.status === 'done') && (
+                        <button
+                          onClick={() => onOpenSpecialTab?.()}
+                          className="self-start flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors cursor-pointer mt-1"
+                        >
+                          <FiArrowRight size={12} /> Open Messages
+                        </button>
+                      )}
                     </div>
                   )}
                   <div
@@ -785,11 +865,32 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
                         };
                         pre.appendChild(btn);
                       });
+                      el.querySelectorAll('.math-display').forEach((mathDiv) => {
+                        if (mathDiv.querySelector('.math-copy-btn')) return;
+                        const latex = mathDiv.getAttribute('data-latex');
+                        if (!latex) return;
+                        const btn = document.createElement('button');
+                        btn.className = 'math-copy-btn';
+                        btn.title = 'Copy LaTeX';
+                        btn.style.cssText = 'position:absolute;top:4px;right:4px;border:none;background:rgba(128,128,128,0.15);cursor:pointer;padding:4px;border-radius:4px;color:inherit;opacity:0;transition:opacity 0.15s;line-height:0;';
+                        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
+                        mathDiv.addEventListener('mouseenter', () => { btn.style.opacity = '0.6'; });
+                        mathDiv.addEventListener('mouseleave', () => { btn.style.opacity = '0'; });
+                        btn.onmouseenter = () => { btn.style.opacity = '1'; };
+                        btn.onclick = () => {
+                          navigator.clipboard.writeText(latex);
+                          btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+                          setTimeout(() => {
+                            btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
+                          }, 10000);
+                        };
+                        mathDiv.appendChild(btn);
+                      });
                     }}
                   />
                   <div className="flex items-center gap-1 mt-1 ml-4">
                     {msg.durationMs != null && (
-                      <span className="text-[11px] text-neutral-400 dark:text-neutral-500">{formatDuration(msg.durationMs)}</span>
+                      <span className="text-[11px] text-neutral-400 dark:text-neutral-500">{formatDuration(msg.durationMs)}{msg.modelLabel ? ` · written by ${msg.modelLabel}` : ''}</span>
                     )}
                     <CopyButton text={msg.content} />
                     <RetryButton index={i} onRetry={retryWithModel} />
@@ -879,6 +980,14 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
               {pendingToolCalls.map((tc) => (
                 <ToolCallRow key={tc.toolCallId} toolCall={tc} />
               ))}
+              {pendingToolCalls.some(tc => (tc.toolName === 'readEmail' || tc.toolName === 'readDiscord') && tc.status === 'done') && (
+                <button
+                  onClick={() => onOpenSpecialTab?.()}
+                  className="self-start flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors cursor-pointer mt-1"
+                >
+                  <FiArrowRight size={12} /> Open Messages
+                </button>
+              )}
             </div>
           )}
           {isTyping && (
@@ -895,6 +1004,13 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
               </div>
             )
           )}
+          {messageQueue.map((queuedText, qi) => (
+            <div key={`queued-${qi}`} className="flex flex-col self-end max-w-[90%] items-end opacity-40">
+              <div className="p-2.5 px-3.5 rounded-xl rounded-br-sm text-[15px] leading-relaxed break-words whitespace-pre-wrap bg-neutral-100 dark:bg-neutral-900 dark:text-neutral-200">
+                {queuedText}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
       </div>
@@ -988,7 +1104,7 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
               </div>
             )}
           </div>
-          {isTyping ? (
+          {isTyping && (
             <button
               className="w-10 h-10 border-none rounded-[10px] bg-neutral-900 dark:bg-neutral-700 text-white cursor-pointer flex items-center justify-center transition-colors shrink-0 hover:bg-neutral-700 dark:hover:bg-neutral-600"
               title="Stop"
@@ -996,15 +1112,14 @@ IMPORTANT: Your entire response must be valid JSON. Use \\n for newlines within 
             >
               <FiSquare size={16} />
             </button>
-          ) : (
-            <button
-              className="w-10 h-10 border-none rounded-[10px] bg-neutral-900 dark:bg-neutral-700 text-white cursor-pointer flex items-center justify-center transition-colors shrink-0 hover:bg-neutral-700 dark:hover:bg-neutral-600"
-              title="Send"
-              onClick={() => sendChat()}
-            >
-              {isEmpty ? <FiArrowRight size={18} /> : <FiArrowUp size={18} />}
-            </button>
           )}
+          <button
+            className="w-10 h-10 border-none rounded-[10px] bg-neutral-900 dark:bg-neutral-700 text-white cursor-pointer flex items-center justify-center transition-colors shrink-0 hover:bg-neutral-700 dark:hover:bg-neutral-600"
+            title={isTyping ? "Queue message" : "Send"}
+            onClick={() => sendChat()}
+          >
+            {isEmpty ? <FiArrowRight size={18} /> : <FiArrowUp size={18} />}
+          </button>
         </div>
         <div className="flex items-center pb-4 no-drag self-start relative z-10">
           <div className="relative" ref={modelMenuRef}>

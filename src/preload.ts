@@ -28,7 +28,10 @@ export interface Settings {
   serperKey: string;
   openclawUrl: string;
   openclawToken: string;
+  openclawSetupScript: string;
   emailAccounts: EmailAccount[];
+  discordBotToken: string;
+  discordChannelIds: string;
   font: 'geist' | 'pt-serif';
   theme: 'light' | 'sunset' | 'dark' | 'system';
 }
@@ -116,6 +119,34 @@ export interface BrowserAPI {
   stopFindInPage: (webContentsId: number) => void;
   onFoundInPageResult: (callback: (activeMatch: number, totalMatches: number) => void) => void;
   onShortcutFromWebview: (callback: (key: string, alt: boolean) => void) => void;
+  readEmail: (opts?: { accountLabel?: string; limit?: number; beforeSeq?: number }) => Promise<{ error?: string; account?: string; messageCount?: number; messages?: { subject: string; from: string; date: string; preview: string; seq?: number; uid?: number }[] }>;
+  readEmailMessage: (opts: { uid: number; accountLabel?: string }) => Promise<{ error?: string; subject?: string; from?: string; to?: string; date?: string; body?: string; html?: string }>;
+  archiveEmail: (opts: { uid: number; accountLabel?: string }) => Promise<{ error?: string; success?: boolean }>;
+  archiveEmailsBulk: (uids: number[]) => Promise<{ error?: string; success?: boolean; archived?: number }>;
+  readDiscord: (opts?: { channelId?: string; limit?: number; before?: string }) => Promise<{ error?: string; channelId?: string; messages?: { id?: string; author: string; content: string; time: string; attachments: number }[]; availableChannels?: string[] }>;
+  dbUpsertMessages: (messages: any[]) => Promise<{ success: boolean }>;
+  dbGetMessages: (opts?: { source?: string; beforeTime?: number; limit?: number }) => Promise<any[]>;
+  dbGetEmailBody: (uid: number) => Promise<any | null>;
+  dbSaveEmailBody: (body: { uid: number; subject: string; sender: string; recipient: string; date_str: string; body: string; html: string }) => Promise<{ success: boolean }>;
+  dbCreateCustomMessage: (msg: { subject: string; sender: string; body: string }) => Promise<{ id: string; time: number }>;
+  dbGetCustomMessage: (id: string) => Promise<any | null>;
+  dbSaveCursors: (cursors: { emailOldestSeq?: number | null; discordOldestId?: string | null }) => Promise<{ success: boolean }>;
+  dbLoadCursors: () => Promise<{ emailOldestSeq?: number | null; discordOldestId?: string | null }>;
+  summarizeInbox: (rawSummary: string) => Promise<string | null>;
+  categorizeMessage: (message: { id: string; source: string; subject?: string; from?: string; preview?: string; content?: string; author?: string }) => Promise<{ status: string; summary?: string; todos?: { taskName: string; notes: string }[] } | null>;
+  dbUpdateMessageStatus: (id: string, status: string, workspaceNums?: number[], summary?: string) => Promise<{ success: boolean }>;
+  dbResetAllStatuses: () => Promise<{ success: boolean }>;
+  dbGetMessagesByIds: (messageIds: string[]) => Promise<any[]>;
+  dbDeleteMessages: (ids: string[]) => Promise<{ success: boolean }>;
+  previewSyncPayload: (message: { source: string; subject?: string; from?: string; preview?: string; content?: string; author?: string; time?: number; uid?: number; existingWorkspaces?: string[]; globalContext?: string }) => Promise<string>;
+  getNextWorkspaceNum: () => Promise<number>;
+  saveNoteContent: (tabId: number, content: string) => Promise<{ success: boolean }>;
+  loadNoteContent: (tabId: number) => Promise<string>;
+  startMessageSync: () => Promise<{ success: boolean }>;
+  stopMessageSync: () => Promise<{ success: boolean }>;
+  onNewEmails: (callback: (messages: any[]) => void) => void;
+  onNewDiscordMessages: (callback: (messages: any[]) => void) => void;
+  onEmailsRemoved: (callback: (uids: number[]) => void) => void;
 }
 
 contextBridge.exposeInMainWorld('browser', {
@@ -205,5 +236,39 @@ contextBridge.exposeInMainWorld('browser', {
   },
   onShortcutFromWebview: (callback: (key: string, alt: boolean) => void) => {
     ipcRenderer.on('shortcut-from-webview', (_event, key: string, alt: boolean) => callback(key, alt));
+  },
+  readEmail: (opts?: { accountLabel?: string; limit?: number }) => ipcRenderer.invoke('read-email', opts),
+  readEmailMessage: (opts: { uid: number; accountLabel?: string }) => ipcRenderer.invoke('read-email-message', opts),
+  archiveEmail: (opts: { uid: number; accountLabel?: string }) => ipcRenderer.invoke('archive-email', opts),
+  archiveEmailsBulk: (uids: number[]) => ipcRenderer.invoke('archive-emails-bulk', uids),
+  readDiscord: (opts?: { channelId?: string; limit?: number }) => ipcRenderer.invoke('read-discord', opts),
+  dbUpsertMessages: (messages: any[]) => ipcRenderer.invoke('db-upsert-messages', messages),
+  dbGetMessages: (opts?: { source?: string; beforeTime?: number; limit?: number }) => ipcRenderer.invoke('db-get-messages', opts),
+  dbGetEmailBody: (uid: number) => ipcRenderer.invoke('db-get-email-body', uid),
+  dbSaveEmailBody: (body: { uid: number; subject: string; sender: string; recipient: string; date_str: string; body: string; html: string }) => ipcRenderer.invoke('db-save-email-body', body),
+  dbCreateCustomMessage: (msg: { subject: string; sender: string; body: string }) => ipcRenderer.invoke('db-create-custom-message', msg),
+  dbGetCustomMessage: (id: string) => ipcRenderer.invoke('db-get-custom-message', id),
+  dbSaveCursors: (cursors: { emailOldestSeq?: number | null; discordOldestId?: string | null }) => ipcRenderer.invoke('db-save-cursors', cursors),
+  dbLoadCursors: () => ipcRenderer.invoke('db-load-cursors'),
+  summarizeInbox: (rawSummary: string) => ipcRenderer.invoke('summarize-inbox', rawSummary),
+  categorizeMessage: (message: { id: string; source: string; subject?: string; from?: string; preview?: string; content?: string; author?: string }) => ipcRenderer.invoke('categorize-message', message),
+  dbUpdateMessageStatus: (id: string, status: string, workspaceNums?: number[], summary?: string) => ipcRenderer.invoke('db-update-message-status', id, status, workspaceNums, summary),
+  dbResetAllStatuses: () => ipcRenderer.invoke('db-reset-all-statuses'),
+  dbGetMessagesByIds: (messageIds: string[]) => ipcRenderer.invoke('db-get-messages-by-ids', messageIds),
+  dbDeleteMessages: (ids: string[]) => ipcRenderer.invoke('db-delete-messages', ids),
+  previewSyncPayload: (message: any) => ipcRenderer.invoke('preview-sync-payload', message),
+  getNextWorkspaceNum: () => ipcRenderer.invoke('get-next-workspace-num'),
+  saveNoteContent: (tabId: number, content: string) => ipcRenderer.invoke('save-note-content', tabId, content),
+  loadNoteContent: (tabId: number) => ipcRenderer.invoke('load-note-content', tabId),
+  startMessageSync: () => ipcRenderer.invoke('start-message-sync'),
+  stopMessageSync: () => ipcRenderer.invoke('stop-message-sync'),
+  onNewEmails: (callback: (messages: any[]) => void) => {
+    ipcRenderer.on('new-emails', (_event, messages: any[]) => callback(messages));
+  },
+  onNewDiscordMessages: (callback: (messages: any[]) => void) => {
+    ipcRenderer.on('new-discord-messages', (_event, messages: any[]) => callback(messages));
+  },
+  onEmailsRemoved: (callback: (uids: number[]) => void) => {
+    ipcRenderer.on('emails-removed', (_event, uids: number[]) => callback(uids));
   },
 } satisfies BrowserAPI);

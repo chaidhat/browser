@@ -4,7 +4,7 @@ export interface TabInfo {
   id: number;
   title: string;
   url: string;
-  type: 'chat' | 'page';
+  type: 'chat' | 'page' | 'messages' | 'notes' | 'history';
 }
 
 export interface WebviewContainerHandle {
@@ -23,11 +23,12 @@ interface Props {
   onTabUpdate: (id: number, updates: { title?: string; url?: string }) => void;
   onLoadingChange: (tabId: number, loading: boolean) => void;
   onFaviconChange: (tabId: number, favicon: string) => void;
+  onNewTab?: (url: string) => void;
   hidden?: boolean;
 }
 
 export const WebviewContainer = forwardRef<WebviewContainerHandle, Props>(
-  ({ tabs, activeTabId, onTabUpdate, onLoadingChange, onFaviconChange, hidden }, ref) => {
+  ({ tabs, activeTabId, onTabUpdate, onLoadingChange, onFaviconChange, onNewTab, hidden }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const webviewsRef = useRef<Map<number, Electron.WebviewTag>>(new Map());
     const listenersRef = useRef<Map<number, (() => void)>>(new Map());

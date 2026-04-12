@@ -7,7 +7,7 @@ interface TabInfo {
   id: number;
   title: string;
   url: string;
-  type: 'chat' | 'page';
+  type: 'chat' | 'page' | 'messages' | 'notes' | 'history';
 }
 
 interface HistoryEntry {
@@ -38,6 +38,7 @@ interface Props {
   visitHistory?: HistoryEntry[];
   onCreateTab: () => void;
   hasTabBar?: boolean;
+  onOpenSpecialTab?: (tabType: 'messages' | 'notes' | 'history') => void;
 }
 
 const btnClass = "w-8 h-8 border-none rounded-md bg-transparent text-neutral-500 dark:text-neutral-400 cursor-pointer flex items-center justify-center transition-colors hover:bg-black/6 dark:hover:bg-white/6 hover:text-black dark:hover:text-neutral-200 active:bg-black/10 dark:active:bg-white/12";
@@ -52,7 +53,7 @@ export function Toolbar({
   activeUrl, loading,
   onNavigate, onSearch, onBack, onForward, onReload,
   onToggleTabSidebar, tabSidebarOpen, onOpenSettings, isChatTab,
-  allTabs = [], visitHistory = [], onCreateTab, hasTabBar,
+  allTabs = [], visitHistory = [], onCreateTab, hasTabBar, onOpenSpecialTab,
 }: Props) {
   const [urlValue, setUrlValue] = useState(activeUrl);
   const [progressState, setProgressState] = useState<'idle' | 'loading' | 'completing'>('idle');
@@ -212,6 +213,21 @@ export function Toolbar({
       }
       const value = urlValue.trim();
       if (!value) return;
+      const lower = value.toLowerCase();
+      if (lower === 'email' || lower === 'mail' || lower === 'inbox' || lower === 'discord' || lower === 'messages') {
+        setShowDropdown(false);
+        inputRef.current?.blur();
+        setUrlValue('');
+        onOpenSpecialTab?.('messages');
+        return;
+      }
+      if (lower === 'notes' || lower === 'note') {
+        setShowDropdown(false);
+        inputRef.current?.blur();
+        setUrlValue('');
+        onOpenSpecialTab?.('notes');
+        return;
+      }
       setShowDropdown(false);
       inputRef.current?.blur();
       if (e.metaKey) {

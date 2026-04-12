@@ -26,9 +26,13 @@ export function renderContent(raw: string): string {
     return `%%MATH_${idx}%%`;
   }
 
-  // Display math: $$...$$ and \[...\]
-  let text = raw.replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) => placeholder(renderKatex(tex, true)));
-  text = text.replace(/\\\[([\s\S]+?)\\\]/g, (_, tex) => placeholder(renderKatex(tex, true)));
+  // Display math: $$...$$ and \[...\] — wrap in container with data-latex for copy button
+  let text = raw.replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) => placeholder(
+    `<div class="math-display" data-latex="${tex.trim().replace(/"/g, '&quot;')}" style="position:relative">${renderKatex(tex, true)}</div>`
+  ));
+  text = text.replace(/\\\[([\s\S]+?)\\\]/g, (_, tex) => placeholder(
+    `<div class="math-display" data-latex="${tex.trim().replace(/"/g, '&quot;')}" style="position:relative">${renderKatex(tex, true)}</div>`
+  ));
   // Inline math: $...$ and \(...\)
   text = text.replace(/\$([^\$\n]+?)\$/g, (_, tex) => placeholder(renderKatex(tex, false)));
   text = text.replace(/\\\((.+?)\\\)/g, (_, tex) => placeholder(renderKatex(tex, false)));
